@@ -28,11 +28,22 @@ export function searchArguments(query: string, limit = searchLimit): string[] {
   ]
 }
 
-export function downloadArguments(url: string, directory: string): string[] {
+export type DownloadFormat = 'm4a' | 'original'
+
+/**
+ * m4a plays on phones and car stereos, which plain webm/opus often does not.
+ * yt-dlp can mux to m4a without ffmpeg when the source already has AAC, so
+ * this stays a zero-install choice.
+ */
+export function audioSelector(format: DownloadFormat): string {
+  return format === 'm4a' ? 'bestaudio[ext=m4a]/bestaudio/best' : 'bestaudio/best'
+}
+
+export function downloadArguments(url: string, directory: string, format: DownloadFormat = 'original'): string[] {
   return [
     '--ignore-config', '--no-warnings', '--no-playlist', '--newline', '--no-progress',
     '--windows-filenames', '--trim-filenames', '160', '--no-overwrites',
-    '-f', 'bestaudio/best',
+    '-f', audioSelector(format),
     '-o', join(directory, '%(artist,uploader,channel)s - %(title)s [%(id)s].%(ext)s'),
     '--print', 'after_move:filepath', url,
   ]
@@ -87,6 +98,65 @@ export function parseDownloadedPath(stdout: string): string | null {
   return null
 }
 
+export function playlistArguments(url: string, cookiesPath: string | null): string[] {
+  return [
+    '--ignore-config', '--no-warnings', '--flat-playlist', '--dump-single-json',
+    '--playlist-end', '500',
+    ...(cookiesPath ? ['--cookies', cookiesPath] : []),
+    url,
+  ]
+}
+
+interface PlaylistEntry extends FlatEntry {
+  webpage_url?: string
+}
+
+/**
+ * Converts yt-dlp's flat playlist JSON into our track list. SoundCloud, VK and
+ * similar services usually know the exact recording, so `sourceUrl` lets the
+ * pipeline skip the YouTube search and download from the original service.
+ */
+export function parsePlaylistOutput(stdout: string): { name: string | null; tracks: PipelineTrackInput[] } | null {
+  const trimmed = stdout.trim()
+  if (!trimmed) return null
+  let payload: { title?: unknown; entries?: unknown }
+  try {
+    payload = JSON.parse(trimmed) as { title?: unknown; entries?: unknown }
+  } catch {
+    return null
+  }
+  if (!Array.isArray(payload.entries)) return null
+  const tracks: PipelineTrackInput[] = []
+  for (const raw of payload.entries as (PlaylistEntry | null)[]) {
+    if (!raw || typeof raw.title !== 'string' || !raw.title.trim()) continue
+    const webUrl = typeof raw.webpage_url === 'string' && /^https?:/i.test(raw.webpage_url)
+      ? raw.webpage_url
+      : typeof raw.url === 'string' && /^https?:/i.test(raw.url) ? raw.url : null
+    let title = raw.title.trim()
+    let artist = raw.uploader?.trim() || raw.channel?.trim() || null
+    if (!artist && title.includes(' - ')) {
+      const [left, ...rest] = title.split(' - ')
+      if (left.trim() && rest.join(' - ').trim()) {
+        artist = left.trim()
+        title = rest.join(' - ').trim()
+      }
+    }
+    tracks.push({
+      title: title.slice(0, 300),
+      artist,
+      album: null,
+      durationSeconds: typeof raw.duration === 'number' && raw.duration > 0 ? raw.duration : null,
+      isrc: null,
+      providerId: typeof raw.id === 'string' ? raw.id : null,
+      sourceUrl: webUrl,
+    })
+  }
+  return {
+    name: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim() : null,
+    tracks,
+  }
+}
+
 export class YtDlp {
   constructor(private readonly binary: string) {}
 
@@ -100,11 +170,11 @@ export class YtDlp {
     }
   }
 
-  async download(candidate: AudioCandidate, directory: string, signal?: AbortSignal): Promise<string> {
+  async download(candidate: AudioCandidate, directory: string, signal?: AbortSignal, format: DownloadFormat = 'original'): Promise<string> {
     await mkdir(directory, { recursive: true })
     let stdout: string
     try {
-      ({ stdout } = await runProcess(this.binary, downloadArguments(candidate.url, directory), {
+      ({ stdout } = await runProcess(this.binary, downloadArguments(candidate.url, directory, format), {
         timeoutMs: downloadTimeoutMs, signal,
       }))
     } catch (error) {

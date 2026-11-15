@@ -10,7 +10,27 @@ interface MusicBrainzRecording {
   score?: number
   length?: number
   isrcs?: string[]
+  genres?: { name?: string; count?: number }[]
+  tags?: { name?: string; count?: number }[]
   'artist-credit'?: { name?: string }[]
+}
+
+/**
+ * MusicBrainz keeps curated genres and free-form tags. Genres are preferred;
+ * when a recording has none, the most used tags still give the wave something
+ * to work with.
+ */
+export function musicBrainzGenres(recording: MusicBrainzRecording): string[] {
+  const names = (values: { name?: string }[] | undefined) => (values ?? [])
+    .map(value => typeof value.name === 'string' ? value.name.trim() : '')
+    .filter(Boolean)
+  const genres = names(recording.genres)
+  if (genres.length) return genres.slice(0, 5)
+  return (recording.tags ?? [])
+    .filter(tag => typeof tag.name === 'string' && tag.name.trim() && (tag.count ?? 0) >= 1)
+    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+    .map(tag => tag.name!.trim())
+    .slice(0, 3)
 }
 
 export function parseIsrcLookup(payload: unknown, isrc: string): PipelineTrackInput | null {
@@ -30,6 +50,7 @@ export function parseIsrcLookup(payload: unknown, isrc: string): PipelineTrackIn
     album: null,
     durationSeconds: typeof best.length === 'number' && best.length > 0 ? Math.round(best.length / 1000) : null,
     isrc: wanted,
+    genres: musicBrainzGenres(best),
     providerId: typeof best.id === 'string' ? best.id : null,
   }
 }
@@ -42,6 +63,7 @@ function toTrack(recording: MusicBrainzRecording, isrc: string): PipelineTrackIn
     album: null,
     durationSeconds: typeof recording.length === 'number' && recording.length > 0 ? Math.round(recording.length / 1000) : null,
     isrc: isrc.toUpperCase(),
+    genres: musicBrainzGenres(recording),
     providerId: typeof recording.id === 'string' ? recording.id : null,
   }
 }
@@ -84,7 +106,7 @@ export class MusicBrainzLookup {
     const normalized = isrc.trim().toUpperCase()
     if (!/^[A-Z0-9]{12}$/.test(normalized)) return null
     return this.limiter.run(async () => {
-      const url = `https://musicbrainz.org/ws/2/isrc/${encodeURIComponent(normalized)}?fmt=json&inc=recordings+artist-credits`
+      const url = `https://musicbrainz.org/ws/2/isrc/${encodeURIComponent(normalized)}?fmt=json&inc=recordings+artist-credits+genres+tags`
       const response = await this.request(url, { headers: { 'User-Agent': userAgent, Accept: 'application/json' } })
       if (!response.ok) return null
       return parseIsrcLookup(await response.json(), normalized)
@@ -105,7 +127,7 @@ export class MusicBrainzLookup {
     for (const candidate of rankMusicBrainzCandidates(input, search).slice(0, 2)) {
       if (typeof candidate.id !== 'string') continue
       const lookup = await this.json<MusicBrainzRecording>(
-        `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(candidate.id)}?inc=isrcs+artist-credits&fmt=json`,
+        `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(candidate.id)}?inc=isrcs+artist-credits+genres+tags&fmt=json`,
       )
       const isrc = lookup?.isrcs?.find(value => typeof value === 'string' && /^[A-Z0-9]{12}$/i.test(value))
       if (isrc) return toTrack(lookup!, isrc)

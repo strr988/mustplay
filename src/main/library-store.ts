@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { audioFormats, builtInCursors, defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
 import type { CursorPreset, CursorSettings, LyricsMode, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import type { PipelineJob } from '../shared/pipeline'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
@@ -118,6 +119,11 @@ const migrations = [
     verified_at TEXT NOT NULL
   ) STRICT;
   CREATE INDEX IF NOT EXISTS fingerprint_cache_isrc ON fingerprint_cache(isrc);`,
+  `CREATE TABLE IF NOT EXISTS pipeline_jobs (
+    id TEXT PRIMARY KEY NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;`,
 ]
 
 function migrateAudioFormats(db: DatabaseSync): void {
@@ -570,6 +576,90 @@ export class LibraryStore implements ListeningDataReader {
       this.db.prepare(`INSERT INTO fingerprint_cache (fingerprint, isrc, verified_at)
         VALUES (?, ?, ?)
         ON CONFLICT (fingerprint) DO UPDATE SET isrc = excluded.isrc, verified_at = excluded.verified_at`).run(fingerprint, isrc, new Date().toISOString())
+    })
+  }
+
+  savePipelineJob(job: PipelineJob): void {
+    this.db.prepare(`INSERT INTO pipeline_jobs (id, payload, created_at) VALUES (?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`)
+      .run(job.id, JSON.stringify(job), job.createdAt)
+  }
+
+  loadPipelineJobs(): PipelineJob[] {
+    const rows = this.db.prepare('SELECT payload FROM pipeline_jobs ORDER BY created_at DESC')
+      .all() as { payload: string }[]
+    const jobs: PipelineJob[] = []
+    for (const row of rows) {
+      try {
+        const job = JSON.parse(row.payload) as PipelineJob
+        // Ignore rows from a future version instead of breaking the whole import screen.
+        if (typeof job?.id !== 'string' || !Array.isArray(job.items) || typeof job.playlistName !== 'string') continue
+        // Jobs saved by 0.9 predate the playlist link, genres and retry fields.
+        job.playlistId ??= null
+        job.sourceNote ??= null
+        job.finishedAt ??= null
+        job.message ??= null
+        for (const item of job.items) {
+          item.genres = Array.isArray(item.genres) ? item.genres.filter(genre => typeof genre === 'string') : []
+          item.candidateId ??= null
+          item.cached ??= false
+        }
+        jobs.push(job)
+      } catch {
+        // A damaged history row must not hide the rest of the history.
+      }
+    }
+    return jobs
+  }
+
+  /** Local track that was scanned from this exact file path. */
+  findTrackIdByPath(path: string): string | null {
+    const row = this.db.prepare(`SELECT track_id FROM sources
+      WHERE provider = 'local' AND provider_id = ? AND excluded = 0 ORDER BY rowid DESC LIMIT 1`)
+      .get(path) as { track_id: string } | undefined
+    return row?.track_id ?? null
+  }
+
+  /**
+   * Imported audio often has no tags at all (webm/opus from yt-dlp), so the
+   * catalogue metadata from the playlist is written to the library directly.
+   */
+  updateTrackMetadata(
+    id: string,
+    metadata: { title: string; artist: string | null; album: string | null; durationSeconds: number | null; genres: string[] },
+  ): void {
+    this.db.prepare(`UPDATE tracks SET title = ?, artist = COALESCE(?, artist), album = COALESCE(?, album),
+      duration_seconds = COALESCE(?, duration_seconds),
+      genres = CASE WHEN ? = '[]' THEN genres ELSE ? END WHERE id = ?`)
+      .run(metadata.title, metadata.artist, metadata.album, metadata.durationSeconds,
+        JSON.stringify(metadata.genres), JSON.stringify(metadata.genres), id)
+  }
+
+  linkIsrcTrack(isrc: string, trackId: string): void {
+    this.db.prepare('UPDATE isrc_cache SET track_id = ? WHERE isrc = ?').run(trackId, isrc)
+  }
+
+  /** Creates or refreshes the playlist that mirrors an imported source playlist. */
+  upsertPipelinePlaylist(name: string, trackIds: readonly string[], existingId: string | null): string {
+    return this.transaction(() => {
+      let id = existingId
+      if (id && !this.db.prepare('SELECT 1 FROM playlists WHERE id = ?').get(id)) id = null
+      if (id) {
+        this.db.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, id)
+      } else {
+        id = randomUUID()
+        this.db.prepare('INSERT INTO playlists (id, name) VALUES (?, ?)').run(id, name)
+      }
+      this.db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(id)
+      const insert = this.db.prepare('INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)')
+      const seen = new Set<string>()
+      let position = 0
+      for (const trackId of trackIds) {
+        if (seen.has(trackId)) continue
+        seen.add(trackId)
+        insert.run(id, trackId, position++)
+      }
+      return id
     })
   }
 

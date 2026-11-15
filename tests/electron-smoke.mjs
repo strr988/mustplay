@@ -21,9 +21,13 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
-  const v9 = !app.isPackaged || app.getVersion() === '0.9.0'
-  const v8 = v9 || app.getVersion() === '0.8.0'
-  const mustplay = v8 || app.getVersion() === '0.7.0'
+  const version = app.getVersion()
+  const minor = Number(version.split('.')[1] ?? 0)
+  // Packaged builds of historical versions are part of the release test, so
+  // feature gates must keep working for every newer minor version too.
+  const v9 = !app.isPackaged || minor >= 9
+  const v8 = !app.isPackaged || minor >= 8
+  const mustplay = !app.isPackaged || minor >= 7
   const rendererApi = mustplay ? 'window.mustplay' : 'window.musicPlayer'
   const origin = mustplay ? 'mustplay://app' : 'music-player://app'
   const run = (script, gesture = false) => webContents.executeJavaScript(
@@ -128,6 +132,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         v9 ? ['getPipelineStatus', 'savePipelineSettings', 'choosePipelineFolder', 'installPipelineTools',
           'connectPipelineSpotify', 'disconnectPipelineSpotify', 'exchangePipelineSpotifyCode',
           'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
+          'retryPipelineItem', 'skipPipelineItem',
           'openPipelineFolder', 'openWebSource', 'getWebSourceState', 'setWebSourceBounds',
           'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData'] : []).sort()
   assert.deepEqual(await run(`({

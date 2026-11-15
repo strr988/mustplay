@@ -1,11 +1,18 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { session } from 'electron'
 import { WebContentsView } from 'electron'
 import type { BrowserWindow, Session } from 'electron'
 import type { ProviderPlaylist, WebSourceBounds, WebSourceProvider, WebSourceState } from '../shared/pipeline'
+import { pipelineProviderLabels } from '../shared/pipeline'
 import {
   buildYtMusicContinuationRequest, maxPages, maxTracks, mergeYtMusicTracks,
   parseYtMusicContinuation, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
 } from '../metadata/providers/ytmusic'
+import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } from '../metadata/providers/yandex'
+import { parsePlaylistOutput, playlistArguments } from '../audio/ytdlp'
+import { runProcess } from '../audio/process'
 
 /**
  * Web sources are read inside the user's own browser session: the app opens a
@@ -21,11 +28,36 @@ export interface WebSourceImport {
   playlist: ProviderPlaylist
 }
 
-const providerHome: Record<WebSourceProvider, string> = {
-  ytmusic: 'https://music.youtube.com/',
+interface ProviderConfig {
+  home: string
+  hosts: string[]
 }
 
-const allowedHosts = ['music.youtube.com', 'youtube.com', 'google.com', 'gstatic.com']
+const providerConfig: Record<WebSourceProvider, ProviderConfig> = {
+  ytmusic: {
+    home: 'https://music.youtube.com/',
+    hosts: ['music.youtube.com', 'youtube.com', 'gstatic.com', 'googlevideo.com'],
+  },
+  yandex: {
+    home: 'https://music.yandex.ru/',
+    hosts: ['yandex.ru', 'yandex.com', 'yandex.net', 'yastatic.net'],
+  },
+  vk: {
+    home: 'https://vk.com/music',
+    hosts: ['vk.com', 'vk.ru', 'userapi.com', 'vk-cdn.net', 'mycdn.me'],
+  },
+  soundcloud: {
+    home: 'https://soundcloud.com/',
+    hosts: ['soundcloud.com', 'sndcdn.com', 'soundcloud.cloud'],
+  },
+}
+
+// Every provider shares one persisted session, so navigation is checked against
+// the union of their hosts; non-HTTPS and unknown hosts are still blocked.
+const allowedHosts = [...new Set([
+  'google.com',
+  ...Object.values(providerConfig).flatMap(config => config.hosts),
+])]
 
 function isAllowedUrl(value: string): boolean {
   try {
@@ -36,6 +68,38 @@ function isAllowedUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+let ytDlpPath: (() => string | null) | null = null
+
+/** The pipeline owns the tool manager, so it supplies the binary once it exists. */
+export function setWebSourceYtDlpResolver(resolver: () => string | null): void {
+  ytDlpPath = resolver
+}
+
+/**
+ * yt-dlp cannot read Chromium's cookie database, so the session cookies are
+ * written to a short-lived Netscape cookie file for Sources that need a login.
+ */
+async function exportCookies(sources: Session): Promise<{ dir: string; path: string } | null> {
+  const cookies = await sources.cookies.get({})
+  if (!cookies.length) return null
+  const dir = await mkdtemp(join(tmpdir(), 'mustplay-cookies-'))
+  const path = join(dir, 'cookies.txt')
+  const lines = ['# Netscape HTTP Cookie File', '']
+  for (const cookie of cookies) {
+    if (!cookie.domain || !cookie.name) continue
+    if (cookie.httpOnly) {
+      // yt-dlp expects the #HttpOnly_ prefix for cookies the page cannot see.
+      lines.push(`#HttpOnly_${cookie.domain}\t${cookie.domain.startsWith('.') ? 'TRUE' : 'FALSE'}\t${cookie.path || '/'}\t${cookie.secure ? 'TRUE' : 'FALSE'}\t${cookie.expirationDate ? Math.round(cookie.expirationDate) : 0}\t${cookie.name}\t${cookie.value}`)
+      continue
+    }
+    lines.push([cookie.domain, cookie.domain.startsWith('.') ? 'TRUE' : 'FALSE', cookie.path || '/',
+      cookie.secure ? 'TRUE' : 'FALSE', String(cookie.expirationDate ? Math.round(cookie.expirationDate) : 0),
+      cookie.name, cookie.value].join('\t'))
+  }
+  await writeFile(path, `${lines.join('\n')}\n`, 'utf8')
+  return { dir, path }
 }
 
 export class WebSourceManager {
@@ -71,9 +135,10 @@ export class WebSourceManager {
   }
 
   open(provider: WebSourceProvider, parent: BrowserWindow): WebSourceState {
-    if (!(provider in providerHome)) throw new Error('Неизвестный веб-источник')
+    const config = providerConfig[provider]
+    if (!config) throw new Error('Неизвестный веб-источник')
     if (this.view && this.provider === provider && this.window === parent) {
-      if (!this.view.webContents.isDestroyed()) this.view.webContents.loadURL(providerHome[provider]).catch(() => {})
+      if (!this.view.webContents.isDestroyed()) this.view.webContents.loadURL(config.home).catch(() => {})
       return this.state()
     }
     this.close()
@@ -100,7 +165,7 @@ export class WebSourceManager {
     this.window = parent
     parent.contentView.addChildView(view)
     parent.on('resize', this.layout)
-    void view.webContents.loadURL(providerHome[provider]).catch(() => {})
+    void view.webContents.loadURL(config.home).catch(() => {})
     return this.state()
   }
 
@@ -164,11 +229,16 @@ export class WebSourceManager {
     if (!this.view || this.view.webContents.isDestroyed() || !this.provider) {
       throw new Error('Сначала откройте окно сервиса')
     }
-    if (this.provider !== 'ytmusic') throw new Error('Этот веб-источник пока не поддерживается')
+    const provider = this.provider
     const currentUrl = this.view.webContents.getURL()
-    const listId = parseYtMusicPlaylistId(currentUrl)
-    if (!listId) throw new Error('Откройте плейлист YT Music в окне сервиса и повторите импорт')
-    return await this.importYtMusicPlaylist(listId, currentUrl)
+    const sources = this.sourcesSession()
+    if (provider === 'ytmusic') {
+      const listId = parseYtMusicPlaylistId(currentUrl)
+      if (!listId) throw new Error('Откройте плейлист YT Music в окне сервиса и повторите импорт')
+      return await this.importYtMusicPlaylist(listId, currentUrl)
+    }
+    if (provider === 'yandex') return await this.importYandexPlaylist(currentUrl, sources)
+    return await this.importWithYtDlp(provider, currentUrl, sources)
   }
 
   private async importYtMusicPlaylist(listId: string, currentUrl: string): Promise<WebSourceImport> {
@@ -201,6 +271,56 @@ export class WebSourceManager {
       ? `Список прочитан из вашей сессии YT Music: ${tracks.length} треков, продолжение не загружено.`
       : `Список прочитан из вашей сессии YT Music: ${tracks.length} треков.`
     return { provider: 'ytmusic', url: currentUrl, playlist: { name, tracks, note } }
+  }
+
+  private async importYandexPlaylist(currentUrl: string, sources: Session): Promise<WebSourceImport> {
+    const ref = parseYandexPlaylistUrl(currentUrl)
+    if (!ref) throw new Error('Откройте плейлист Яндекс Музыки в окне сервиса и повторите импорт')
+    const response = await sources.fetch(yandexPlaylistEndpoint(ref), {
+      headers: { Accept: 'application/json', 'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8' },
+    })
+    if (!response.ok) throw new Error(`Яндекс Музыка ответила ${response.status}. Войдите в аккаунт и повторите.`)
+    const playlist = parseYandexPlaylist(await response.json())
+    if (!playlist.tracks.length) throw new Error('В плейлисте не нашлось треков')
+    return { provider: 'yandex', url: currentUrl, playlist }
+  }
+
+  /**
+   * SoundCloud and VK expose a page yt-dlp can read with the session cookies.
+   * This also covers private playlists of the signed-in account.
+   */
+  private async importWithYtDlp(
+    provider: WebSourceProvider,
+    currentUrl: string,
+    sources: Session,
+  ): Promise<WebSourceImport> {
+    const binary = ytDlpPath?.()
+    if (!binary) throw new Error('Инструменты импорта ещё не установлены. Запустите импорт по ссылке, чтобы mustplay их поставил.')
+    const cookies = await exportCookies(sources).catch(() => null)
+    try {
+      let stdout: string
+      try {
+        ({ stdout } = await runProcess(binary, playlistArguments(currentUrl, cookies?.path ?? null), {
+          timeoutMs: 3 * 60_000,
+        }))
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        throw new Error(`Не удалось прочитать плейлист: ${reason}`)
+      }
+      const parsed = parsePlaylistOutput(stdout)
+      if (!parsed || !parsed.tracks.length) throw new Error('В плейлисте не нашлось треков')
+      return {
+        provider,
+        url: currentUrl,
+        playlist: {
+          name: parsed.name ?? `Плейлист ${pipelineProviderLabels[provider]}`,
+          tracks: parsed.tracks,
+          note: `Список прочитан из вашей сессии ${pipelineProviderLabels[provider]}: ${parsed.tracks.length} треков.`,
+        },
+      }
+    } finally {
+      if (cookies) await rm(cookies.dir, { recursive: true, force: true }).catch(() => {})
+    }
   }
 
   dispose(): void {

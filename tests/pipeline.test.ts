@@ -7,8 +7,12 @@ import {
   parseYtMusicItem, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
 } from '../src/metadata/providers/ytmusic'
 import { parseSpotifyPage } from '../src/metadata/providers/spotify'
+import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } from '../src/metadata/providers/yandex'
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
-import { buildSearchQuery, describeYtDlpFailure, downloadArguments, parseDownloadedPath, parseSearchOutput } from '../src/audio/ytdlp'
+import {
+  audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, parseDownloadedPath,
+  parsePlaylistOutput, parseSearchOutput, playlistArguments,
+} from '../src/audio/ytdlp'
 import { AcoustidKeyError, Fingerprinter } from '../src/pipeline/fingerprint'
 import { retry } from '../src/pipeline/limiter'
 import { judgeFingerprint, pickCandidate } from '../src/pipeline/match'
@@ -93,6 +97,58 @@ describe('yt-dlp helpers', () => {
     const args = downloadArguments('https://youtu.be/x', 'C:/music')
     expect(args).toContain('bestaudio/best')
     expect(args.join(' ')).toContain('after_move:filepath')
+  })
+
+  it('prefers an m4a stream for compatibility without ffmpeg', () => {
+    expect(audioSelector('m4a')).toBe('bestaudio[ext=m4a]/bestaudio/best')
+    expect(downloadArguments('https://youtu.be/x', 'C:/music', 'm4a')).toContain('bestaudio[ext=m4a]/bestaudio/best')
+    expect(audioSelector('original')).toBe('bestaudio/best')
+  })
+
+  it('reads a flat playlist from another service', () => {
+    const playlist = parsePlaylistOutput(JSON.stringify({
+      title: 'Road trip',
+      entries: [
+        { id: '1', title: 'M83 - Midnight City', duration: 244, webpage_url: 'https://soundcloud.com/m83/midnight-city' },
+        { id: '2', title: 'Intro', uploader: 'The xx', webpage_url: 'https://soundcloud.com/thexx/intro' },
+        null,
+      ],
+    }))
+    expect(playlist?.name).toBe('Road trip')
+    expect(playlist?.tracks).toEqual([
+      {
+        title: 'Midnight City', artist: 'M83', album: null, durationSeconds: 244, isrc: null,
+        providerId: '1', sourceUrl: 'https://soundcloud.com/m83/midnight-city',
+      },
+      {
+        title: 'Intro', artist: 'The xx', album: null, durationSeconds: null, isrc: null,
+        providerId: '2', sourceUrl: 'https://soundcloud.com/thexx/intro',
+      },
+    ])
+    expect(playlistArguments('https://soundcloud.com/x/sets/y', 'C:/cookies.txt')).toContain('--cookies')
+  })
+
+  it('parses a Yandex Music playlist with the session endpoint', () => {
+    expect(parseYandexPlaylistUrl('https://music.yandex.ru/users/artem/playlists/3')).toEqual({ owner: 'artem', kind: '3' })
+    expect(parseYandexPlaylistUrl('https://music.yandex.ru/playlists/3')).toBeNull()
+    expect(yandexPlaylistEndpoint({ owner: 'artem', kind: '3' })).toContain('owner=artem&kinds=3')
+    const playlist = parseYandexPlaylist({
+      playlist: {
+        title: 'Дорога',
+        tracks: [{
+          id: 42,
+          title: 'Midnight City',
+          durationMs: 244000,
+          artists: [{ name: 'M83' }],
+          albums: [{ id: 7, title: 'Hurry Up, We’re Dreaming' }],
+        }, null],
+      },
+    })
+    expect(playlist.name).toBe('Дорога')
+    expect(playlist.tracks[0]).toMatchObject({
+      title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming',
+      durationSeconds: 244, albumProviderId: '7',
+    })
   })
 
   it('parses a flat search payload', () => {

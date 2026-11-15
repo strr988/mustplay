@@ -13,12 +13,13 @@ interface Props {
   tracks: LibraryTrack[]
   playbackReady: boolean
   request?: { trackId: string; sequence: number }
+  openRequest?: { id: string; play: boolean; sequence: number }
   onPlay: (playlist: Playlist) => void
   refreshTracks: () => Promise<void>
   onQueue: (id: string, next: boolean) => void
 }
 
-export function Playlists({ active, tracks, playbackReady, request, onPlay, refreshTracks, onQueue }: Props) {
+export function Playlists({ active, tracks, playbackReady, request, openRequest, onPlay, refreshTracks, onQueue }: Props) {
   const api = window.mustplay
   const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
@@ -32,6 +33,7 @@ export function Playlists({ active, tracks, playbackReady, request, onPlay, refr
   const cancelDelete = useRef<HTMLButtonElement>(null)
   const addForm = useRef<HTMLFormElement>(null)
   const handledRequest = useRef<number | undefined>(undefined)
+  const handledOpen = useRef<number | undefined>(undefined)
   const focusAfterEdit = useRef<'create' | 'rename' | 'delete' | null>(null)
   const focusAfterAdd = useRef(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
@@ -72,6 +74,21 @@ export function Playlists({ active, tracks, playbackReady, request, onPlay, refr
     })
     return () => { active = false }
   }, [api, loadAttempt])
+
+  // An import may have created the playlist after this screen first loaded it.
+  useEffect(() => {
+    if (!openRequest) return
+    setLoadAttempt(attempt => attempt + 1)
+  }, [openRequest?.sequence])
+
+  useEffect(() => {
+    if (!active || !openRequest || !playlists || handledOpen.current === openRequest.sequence) return
+    const target = playlists.find(playlist => playlist.id === openRequest.id)
+    if (!target) return
+    handledOpen.current = openRequest.sequence
+    setSelectedId(target.id)
+    if (openRequest.play) onPlay(target)
+  }, [active, openRequest, playlists, onPlay])
 
   async function mutate(action: () => Promise<void>, message: string): Promise<void> {
     setPending(true)

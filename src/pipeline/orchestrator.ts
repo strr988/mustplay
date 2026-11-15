@@ -14,6 +14,8 @@ export interface TrackOutcome {
   confidence: number | null
   filePath: string | null
   message: string
+  candidateId: string | null
+  cached: boolean
 }
 
 export interface TrackDeps {
@@ -31,15 +33,28 @@ export interface TrackDeps {
   discard(filePath: string): Promise<void>
   update(status: PipelineItemStatus): void
   isCancelled(): boolean
+  /** Downloads that were already tried for this item, e.g. when asking for another version. */
+  excludedCandidates?: ReadonlySet<string>
+  /** A retry must not stop at the cached file of a previous successful attempt. */
+  useCache?: boolean
 }
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function skipped(): TrackOutcome {
+  return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен', candidateId: null, cached: false }
+}
+
+function mergeGenres(track: PipelineTrackInput, resolved: PipelineTrackInput): string[] | undefined {
+  const genres = track.genres?.length ? track.genres : resolved.genres
+  return genres?.length ? genres : undefined
+}
+
 export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Promise<TrackOutcome> {
   let track: PipelineTrackInput = { ...input, isrc: isrcOf(input) }
-  if (deps.isCancelled()) return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен' }
+  if (deps.isCancelled()) return skipped()
 
   // Sources such as Spotify's public page and YT Music do not expose an ISRC.
   // Resolve one by artist/title so the strongest check is still available.
@@ -53,6 +68,7 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
           title: track.title || resolved.title,
           artist: track.artist ?? resolved.artist,
           album: track.album ?? resolved.album,
+          genres: mergeGenres(track, resolved),
           durationSeconds: track.durationSeconds ?? resolved.durationSeconds,
         }
       }
@@ -60,13 +76,15 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
       // A failing catalogue lookup must not stop the audio search.
     }
   }
-  if (deps.isCancelled()) return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен' }
+  if (deps.isCancelled()) return skipped()
 
-  if (track.isrc) {
+  if (track.isrc && deps.useCache !== false) {
     const cached = await deps.cachedFile(track.isrc)
     if (cached) {
-      return { status: 'verified', method: 'isrc', confidence: 1, filePath: cached, message: `Из кэша ISRC: ${track.isrc}` }
+      return { status: 'verified', method: 'isrc', confidence: 1, filePath: cached, message: 'Уже в библиотеке', candidateId: null, cached: true }
     }
+  }
+  if (track.isrc) {
     try {
       const resolved = await deps.resolveIsrc(track.isrc)
       if (resolved) {
@@ -75,6 +93,7 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
           title: resolved.title || track.title,
           artist: resolved.artist ?? track.artist,
           album: resolved.album ?? track.album,
+          genres: mergeGenres(track, resolved),
           durationSeconds: resolved.durationSeconds ?? track.durationSeconds,
         }
       }
@@ -96,12 +115,16 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
     }
   } else {
     try {
-      candidate = pickCandidate(track, await deps.search(track))
+      const found = await deps.search(track)
+      const pool = deps.excludedCandidates?.size
+        ? found.filter(item => !deps.excludedCandidates!.has(item.id))
+        : found
+      candidate = pickCandidate(track, pool)
     } catch (error) {
-      return { status: 'failed', method: 'none', confidence: null, filePath: null, message: `Поиск не удался: ${message(error)}` }
+      return { status: 'failed', method: 'none', confidence: null, filePath: null, message: `Поиск не удался: ${message(error)}`, candidateId: null, cached: false }
     }
     if (!candidate) {
-      return { status: 'rejected', method: 'none', confidence: null, filePath: null, message: 'Подходящий аудиокандидат не найден' }
+      return { status: 'rejected', method: 'none', confidence: null, filePath: null, message: 'Не нашли подходящую версию на YouTube', candidateId: null, cached: false }
     }
   }
 
@@ -110,11 +133,14 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
   try {
     filePath = await deps.download(candidate)
   } catch (error) {
-    return { status: deps.isCancelled() ? 'skipped' : 'failed', method: 'none', confidence: null, filePath: null, message: `Скачивание не удалось: ${message(error)}` }
+    return {
+      status: deps.isCancelled() ? 'skipped' : 'failed', method: 'none', confidence: null, filePath: null,
+      message: `Не удалось скачать: ${message(error)}`, candidateId: candidate.id, cached: false,
+    }
   }
   if (deps.isCancelled()) {
     await deps.discard(filePath).catch(() => {})
-    return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен' }
+    return skipped()
   }
 
   deps.update('verifying')
@@ -126,14 +152,20 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
       await deps.remember(track, filePath, verdict, fingerprint)
       return {
         status: 'verified', method: verdict.method, confidence: verdict.confidence,
-        filePath, message: verdict.message,
+        filePath, message: verdict.message, candidateId: candidate.id, cached: false,
       }
     }
     await deps.discard(filePath)
-    return { status: 'rejected', method: 'none', confidence: verdict.confidence, filePath: null, message: verdict.message }
+    return {
+      status: 'rejected', method: 'none', confidence: verdict.confidence, filePath: null,
+      message: verdict.message, candidateId: candidate.id, cached: false,
+    }
   } catch (error) {
     await deps.discard(filePath).catch(() => {})
-    return { status: 'failed', method: 'none', confidence: null, filePath: null, message: `Проверка не удалась: ${message(error)}` }
+    return {
+      status: 'failed', method: 'none', confidence: null, filePath: null,
+      message: `Проверка не удалась: ${message(error)}`, candidateId: candidate.id, cached: false,
+    }
   }
 }
 

@@ -5,7 +5,7 @@ import { ProviderError } from './types'
 import type { MetadataProvider } from './types'
 
 interface DeezerArtist { name?: string }
-interface DeezerAlbum { title?: string }
+interface DeezerAlbum { id?: number | string; title?: string }
 export interface DeezerTrack {
   id?: number | string
   title?: string
@@ -13,6 +13,10 @@ export interface DeezerTrack {
   isrc?: string
   artist?: DeezerArtist
   album?: DeezerAlbum
+}
+
+function albumProviderId(album: DeezerAlbum | undefined): string | null {
+  return typeof album?.id === 'number' || typeof album?.id === 'string' ? String(album.id) : null
 }
 
 function trackInput(track: DeezerTrack): PipelineTrackInput | null {
@@ -24,6 +28,7 @@ function trackInput(track: DeezerTrack): PipelineTrackInput | null {
     durationSeconds: typeof track.duration === 'number' && track.duration > 0 ? track.duration : null,
     isrc: typeof track.isrc === 'string' && track.isrc.trim() ? track.isrc.trim().toUpperCase() : null,
     providerId: typeof track.id === 'number' || typeof track.id === 'string' ? String(track.id) : null,
+    albumProviderId: albumProviderId(track.album),
   }
 }
 
@@ -82,6 +87,7 @@ export class DeezerProvider implements MetadataProvider {
   readonly id: PipelineProvider = 'deezer'
   readonly requiresAuth = false
   readonly providesIsrc = true
+  private readonly albumGenres = new Map<string, string[]>()
 
   constructor(private readonly limiter: RateLimiter, private readonly request = fetch) {}
 
@@ -94,6 +100,42 @@ export class DeezerProvider implements MetadataProvider {
         throw new ProviderError('deezer', payload.error.message ?? 'Deezer вернул ошибку')
       }
       return payload
+    })
+  }
+
+  /**
+   * Deezer knows genres per album, not per track. One request per album is
+   * enough for a whole playlist and the result is cached for the session.
+   */
+  private async genresForAlbum(id: string | null | undefined): Promise<string[]> {
+    if (!id || !/^\d+$/.test(id)) return []
+    const cached = this.albumGenres.get(id)
+    if (cached) return cached
+    try {
+      const album = await this.json<{ genres?: { data?: { name?: unknown }[] } }>(`https://api.deezer.com/album/${id}`)
+      const genres = (album.genres?.data ?? [])
+        .map(genre => typeof genre.name === 'string' ? genre.name.trim() : '')
+        .filter(Boolean)
+      this.albumGenres.set(id, genres)
+      return genres
+    } catch {
+      this.albumGenres.set(id, [])
+      return []
+    }
+  }
+
+  private async withGenres(track: PipelineTrackInput): Promise<PipelineTrackInput> {
+    const genres = await this.genresForAlbum(track.albumProviderId)
+    return genres.length ? { ...track, genres } : track
+  }
+
+  private async attachGenres(tracks: PipelineTrackInput[]): Promise<PipelineTrackInput[]> {
+    const ids = [...new Set(tracks.map(track => track.albumProviderId).filter((id): id is string => !!id))]
+    const byAlbum = new Map<string, string[]>()
+    for (const id of ids) byAlbum.set(id, await this.genresForAlbum(id))
+    return tracks.map(track => {
+      const genres = track.albumProviderId ? byAlbum.get(track.albumProviderId) : undefined
+      return genres?.length ? { ...track, genres } : track
     })
   }
 
@@ -112,14 +154,18 @@ export class DeezerProvider implements MetadataProvider {
       const next: string | undefined = page.tracks?.next
       page = next ? await this.json<Page>(next) : undefined
     }
-    return { name: typeof first.title === 'string' ? first.title : 'Плейлист Deezer', tracks }
+    return {
+      name: typeof first.title === 'string' ? first.title : 'Плейлист Deezer',
+      tracks: await this.attachGenres(tracks),
+    }
   }
 
   async resolveIsrc(isrc: string): Promise<PipelineTrackInput | null> {
     const normalized = isrc.trim().toUpperCase()
     if (!/^[A-Z0-9]{12}$/.test(normalized)) return null
     const search = await this.json<unknown>(`https://api.deezer.com/search?q=isrc:${encodeURIComponent(`"${normalized}"`)}&limit=1`)
-    return parseDeezerSearch(search)
+    const track = parseDeezerSearch(search)
+    return track ? await this.withGenres(track) : null
   }
 
   /** Finds a reference ISRC for a track that came from a service without one. */
@@ -133,7 +179,8 @@ export class DeezerProvider implements MetadataProvider {
     const search = await this.json<{ data?: DeezerTrack[] }>(
       `https://api.deezer.com/search?q=${encodeURIComponent(terms.join(' '))}&limit=8`,
     )
-    return pickDeezerTrack(input, Array.isArray(search.data) ? search.data : [])
+    const track = pickDeezerTrack(input, Array.isArray(search.data) ? search.data : [])
+    return track ? await this.withGenres(track) : null
   }
 
   async fetchIsrc(trackId: string): Promise<string | null> {

@@ -4,6 +4,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile, parseStream } from 'music-metadata'
 import type { ImportIssue, ImportResult, LibraryTrack, LyricsMode, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
+import type { PipelineJob } from '../shared/pipeline'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
 import type { CursorImage, LocalSource, ScanEntry } from './library-store'
@@ -210,6 +211,48 @@ export class Library implements ListeningDataReader {
       if (!(await lstat(root)).isDirectory()) throw new Error('Expected an import folder')
       const { processed, issues } = await this.scanFolder(root)
       return { status: 'complete', tracks: this.getTracks(), processed, issues }
+    })
+  }
+
+  /**
+   * Turns a finished pipeline job into library tracks and a playlist. Files are
+   * scanned as usual, then the catalogue metadata from the source is written on
+   * top: downloaded webm/opus often has no tags, and the file name is not a
+   * good track title.
+   */
+  importPipelineJob(job: PipelineJob, downloadDir: string): Promise<string | null> {
+    return this.enqueueScan(async () => {
+      const verified = job.items
+        .filter(item => item.status === 'verified' && !!item.filePath)
+        .sort((a, b) => a.position - b.position)
+      if (!verified.length) return null
+      const root = await realpath(downloadDir)
+      if (!(await lstat(root)).isDirectory()) throw new Error('Expected a download folder')
+      await this.scanFolder(root)
+
+      const trackIds: string[] = []
+      for (const item of verified) {
+        let path: string
+        try {
+          path = await realpath(item.filePath!)
+        } catch {
+          continue
+        }
+        if (!isWithin(root, path)) continue
+        const trackId = this.store.findTrackIdByPath(path)
+        if (!trackId) continue
+        this.store.updateTrackMetadata(trackId, {
+          title: item.title,
+          artist: item.artist,
+          album: item.album,
+          durationSeconds: item.durationSeconds,
+          genres: item.genres,
+        })
+        if (item.isrc) this.store.linkIsrcTrack(item.isrc, trackId)
+        trackIds.push(trackId)
+      }
+      if (!trackIds.length) return null
+      return this.store.upsertPipelinePlaylist(job.playlistName || 'Импорт', trackIds, job.playlistId)
     })
   }
 

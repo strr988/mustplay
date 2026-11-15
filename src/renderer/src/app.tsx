@@ -66,6 +66,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   const openingFullPlayer = useRef(false)
   const ownsFullscreen = useRef(false)
   const [playlistRequest, setPlaylistRequest] = useState<{ trackId: string; sequence: number }>()
+  const [playlistOpen, setPlaylistOpen] = useState<{ id: string; play: boolean; sequence: number }>()
   const libraryLink = useRef<HTMLButtonElement>(null)
   const content = useRef<HTMLElement>(null)
   const trackRead = useRef(0)
@@ -186,6 +187,12 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     setSection(next)
     if (queueOpen && compactQueue) setQueueOpen(false)
     if (next !== section && (next === 'library' || next === 'playlists')) void refreshTracks()
+  }
+
+  /** Opens the playlist an import just created, optionally starting playback. */
+  function openImportedPlaylist(playlistId: string, play: boolean) {
+    setPlaylistOpen({ id: playlistId, play, sequence: Date.now() })
+    openSection('playlists')
   }
 
   function toggleTextMusic() {
@@ -390,7 +397,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
                 }} />
             </div>
             <div hidden={section !== 'import'}>
-              <ImportPanel active={section === 'import'} />
+              <ImportPanel active={section === 'import'} onOpenPlaylist={openImportedPlaylist} onLibraryChanged={refreshTracks} />
             </div>
             <div hidden={section !== 'wave'}>
               <Wave mode={waveMode} saving={savingWaveMode} changeMode={mode => void changeWaveMode(mode)}
@@ -405,7 +412,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
             </div>
             <div hidden={section !== 'playlists'}>
               <Playlists active={section === 'playlists'} tracks={tracks} playbackReady={playback.ready && !playback.loading}
-                request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
+                request={playlistRequest} openRequest={playlistOpen} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
             </div>
             <div hidden={section !== 'lyrics'}>
               <LyricsPanel key={JSON.stringify([playback.track?.id, playback.track?.artworkUrl, playback.track?.available])}

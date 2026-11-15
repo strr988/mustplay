@@ -1,15 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   PipelineItem, PipelineItemStatus, PipelineJob, PipelineJobSummary,
-  PipelineSettings, PipelineStatus, WebSourceState,
+  PipelineSettings, PipelineStatus, WebSourceProvider, WebSourceState,
 } from '../../shared/pipeline'
-import { pipelineProviderLabels } from '../../shared/pipeline'
+import { pipelineProviderLabels, webSourceProviders } from '../../shared/pipeline'
 
 const emptySettings: PipelineSettings = {
   spotifyClientId: '',
   acoustidKey: '',
   downloadDir: '',
   workers: 3,
+  format: 'm4a',
   spotifyConnected: false,
 }
 
@@ -20,20 +21,27 @@ const emptyTools: PipelineStatus['tools'] = {
 
 const itemLabels: Record<PipelineItemStatus, string> = {
   pending: 'В очереди',
-  searching: 'Ищем аудио',
+  searching: 'Ищем трек',
   downloading: 'Скачиваем',
-  verifying: 'Проверяем отпечаток',
-  verified: 'Подтверждён',
-  rejected: 'Отброшен',
-  failed: 'Ошибка',
-  skipped: 'Пропущен',
+  verifying: 'Сверяем запись',
+  verified: 'Готово',
+  rejected: 'Не подтверждено',
+  failed: 'Не удалось скачать',
+  skipped: 'Пропущено',
 }
 
 const jobLabels: Record<PipelineJob['status'], string> = {
   running: 'Идёт импорт',
-  done: 'Завершён',
-  failed: 'Ошибка',
-  cancelled: 'Остановлен',
+  done: 'Готово',
+  failed: 'Прервано',
+  cancelled: 'Остановлено',
+}
+
+const providerHints: Record<WebSourceProvider, string> = {
+  ytmusic: 'YT Music',
+  yandex: 'Яндекс Музыка',
+  vk: 'ВК Музыка',
+  soundcloud: 'SoundCloud',
 }
 
 const activeStatuses: PipelineItemStatus[] = ['searching', 'downloading', 'verifying']
@@ -47,11 +55,18 @@ function summarize(job: PipelineJob): PipelineJobSummary {
     total: job.total,
     verified: job.items.filter(item => item.status === 'verified').length,
     createdAt: job.createdAt,
+    playlistId: job.playlistId,
   }
 }
 
 function itemQuery(item: PipelineItem): string {
   return item.artist ? `${item.artist} — ${item.title}` : item.title
+}
+
+function formatDuration(seconds: number | null): string {
+  if (!seconds || seconds <= 0) return ''
+  const total = Math.round(seconds)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
 function countItems(items: readonly PipelineItem[]) {
@@ -82,7 +97,20 @@ function formatElapsed(createdAt: string, finishedAt: string | null, now: number
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-export function ImportPanel({ active }: { active: boolean }) {
+function methodLabel(item: PipelineItem): string {
+  if (item.cached) return 'уже было в библиотеке'
+  if (item.method === 'isrc') return 'по коду трека'
+  if (item.method === 'acoustid') return 'по отпечатку'
+  return ''
+}
+
+interface Props {
+  active: boolean
+  onOpenPlaylist: (playlistId: string, play: boolean) => void
+  onLibraryChanged: () => Promise<void>
+}
+
+export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props) {
   const [status, setStatus] = useState<PipelineStatus | null>(null)
   const [jobs, setJobs] = useState<PipelineJobSummary[]>([])
   const [activeJob, setActiveJob] = useState<PipelineJob | null>(null)
@@ -92,11 +120,13 @@ export function ImportPanel({ active }: { active: boolean }) {
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState<'ok' | 'error' | null>(null)
   const [busy, setBusy] = useState(false)
+  const [retrying, setRetrying] = useState('')
   const [awaitingSpotify, setAwaitingSpotify] = useState(false)
   const [webSource, setWebSource] = useState<WebSourceState | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const stage = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
+  const notifiedDone = useRef<string | null>(null)
 
   useEffect(() => {
     mounted.current = true
@@ -129,6 +159,10 @@ export function ImportPanel({ active }: { active: boolean }) {
         if (!mounted.current || !job) return
         setActiveJob(job)
         setJobs(previous => previous.map(item => item.id === job.id ? summarize(job) : item))
+        if (job.status === 'done' && notifiedDone.current !== job.id) {
+          notifiedDone.current = job.id
+          void onLibraryChanged()
+        }
         if (job.status === 'failed' && job.message) {
           setNotice(job.message)
           setNoticeKind('error')
@@ -136,7 +170,7 @@ export function ImportPanel({ active }: { active: boolean }) {
       }).catch(() => {})
     }, 1200)
     return () => clearInterval(timer)
-  }, [runningId])
+  }, [runningId, onLibraryChanged])
 
   useEffect(() => {
     if (!runningId) return
@@ -226,7 +260,7 @@ export function ImportPanel({ active }: { active: boolean }) {
   async function saveField<K extends keyof PipelineSettings>(key: K, value: PipelineSettings[K]) {
     const saved = await window.mustplay.savePipelineSettings({ [key]: value } as Partial<PipelineSettings>)
     setStatus(previous => (previous ? { ...previous, settings: saved } : previous))
-    setNotice('Настройка сохранена.')
+    setNotice('Сохранено.')
     setNoticeKind('ok')
   }
 
@@ -291,15 +325,9 @@ export function ImportPanel({ active }: { active: boolean }) {
 
   async function startImport() {
     if (!url.trim()) { setNotice('Вставьте ссылку на плейлист.'); setNoticeKind('error'); return }
-    if (!acoustidKey.trim()) { setNotice('Укажите ключ AcoustID.'); setNoticeKind('error'); return }
-    if (!status?.settings.downloadDir) { setNotice('Выберите папку для аудио.'); setNoticeKind('error'); return }
-    if (!status?.tools.ytDlp.installed || !status.tools.fpcalc.installed) {
-      setNotice('Сначала установите инструменты (yt-dlp и fpcalc).')
-      setNoticeKind('error')
-      return
-    }
     setBusy(true)
-    setNotice('')
+    setNotice('Готовим инструменты и читаем плейлист…')
+    setNoticeKind('ok')
     try {
       const job = await window.mustplay.startPipelineImport(url.trim())
       if (!mounted.current) return
@@ -314,15 +342,15 @@ export function ImportPanel({ active }: { active: boolean }) {
     }
   }
 
-  async function openWebSource() {
+  async function openWebSource(provider: WebSourceProvider) {
     setBusy(true)
     setNotice('')
     try {
-      const state = await window.mustplay.openWebSource('ytmusic')
+      const state = await window.mustplay.openWebSource(provider)
       if (!mounted.current) return
       setWebSource(state)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось открыть YT Music.')
+      setNotice(error instanceof Error ? error.message : 'Не удалось открыть сервис.')
       setNoticeKind('error')
     } finally {
       if (mounted.current) setBusy(false)
@@ -356,7 +384,7 @@ export function ImportPanel({ active }: { active: boolean }) {
     await window.mustplay.clearWebSourceData()
     if (!mounted.current) return
     setWebSource(null)
-    setNotice('Сессия YT Music удалена: cookies и кэш очищены.')
+    setNotice('Сессия удалена: cookies и кэш очищены.')
     setNoticeKind('ok')
   }
 
@@ -371,6 +399,51 @@ export function ImportPanel({ active }: { active: boolean }) {
     if (mounted.current && job) setActiveJob(job)
   }
 
+  async function retryItem(item: PipelineItem) {
+    if (!activeJob) return
+    setRetrying(item.id)
+    setNotice(item.status === 'rejected' ? 'Пробуем другую версию…' : 'Повторяем трек…')
+    setNoticeKind('ok')
+    try {
+      const job = await window.mustplay.retryPipelineItem(activeJob.id, item.id)
+      if (!mounted.current) return
+      setActiveJob(job)
+      setJobs(previous => previous.map(summary => summary.id === job.id ? summarize(job) : summary))
+      const updated = job.items.find(entry => entry.id === item.id)
+      if (updated?.status === 'verified') {
+        setNotice('Трек добавлен в плейлист.')
+        setNoticeKind('ok')
+        void onLibraryChanged()
+      } else if (updated?.status === 'rejected') {
+        setNotice('Не удалось подтвердить и эту версию. Можно попробовать ещё раз позже.')
+        setNoticeKind('error')
+      } else if (updated?.status === 'failed') {
+        setNotice(updated.message ?? 'Не удалось скачать трек.')
+        setNoticeKind('error')
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось повторить трек.')
+      setNoticeKind('error')
+    } finally {
+      if (mounted.current) setRetrying('')
+    }
+  }
+
+  async function skipItem(item: PipelineItem) {
+    if (!activeJob) return
+    try {
+      const job = await window.mustplay.skipPipelineItem(activeJob.id, item.id)
+      if (!mounted.current) return
+      setActiveJob(job)
+      setJobs(previous => previous.map(summary => summary.id === job.id ? summarize(job) : summary))
+      setNotice('Трек пропущен.')
+      setNoticeKind('ok')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось пропустить трек.')
+      setNoticeKind('error')
+    }
+  }
+
   const items = activeJob?.items ?? []
   const counts = useMemo(() => countItems(items), [items])
   const settings = status?.settings ?? emptySettings
@@ -378,12 +451,14 @@ export function ImportPanel({ active }: { active: boolean }) {
   const percent = activeJob && activeJob.total > 0 ? Math.min(100, Math.round((counts.done / activeJob.total) * 100)) : 0
   const running = activeJob?.status === 'running'
   const current = counts.active[0] ?? null
+  const toolsReady = tools.ytDlp.installed && tools.fpcalc.installed
+  const webLabel = webSource?.provider ? providerHints[webSource.provider] : 'Сервис'
 
   if (webSource?.open) {
-    return <div className="import-web-stage" ref={stage} aria-label="Импорт из YT Music">
+    return <div className="import-web-stage" ref={stage} aria-label={`Импорт из ${webLabel}`}>
       <header className="import-web-head">
         <div className="import-web-title">
-          <h1>YT Music</h1>
+          <h1>{webLabel}</h1>
           <p className="muted">
             {webSource.title || 'Войдите в аккаунт или откройте плейлист'}
             {webSource.url ? ` · ${webSource.url.replace(/^https:\/\//, '').slice(0, 64)}` : ''}
@@ -408,100 +483,53 @@ export function ImportPanel({ active }: { active: boolean }) {
     <header className="section-heading import-heading">
       <div>
         <h1>Импорт музыки</h1>
-        <p className="muted">Плейлист → ISRC → аудио → отпечаток → локальная копия с логом по каждому треку.</p>
-      </div>
-      <div className="import-head-badges">
-        <span className={`import-badge${tools.ytDlp.installed && tools.fpcalc.installed ? ' is-ready' : ''}`}>
-          {tools.ytDlp.installed && tools.fpcalc.installed ? 'Инструменты готовы' : 'Нужны инструменты'}
-        </span>
-        {settings.spotifyConnected && <span className="import-badge is-ready">Spotify подключён</span>}
+        <p className="muted">Вставьте ссылку на плейлист — mustplay найдёт треки, проверит их и соберёт плейлист в вашей библиотеке.</p>
       </div>
     </header>
 
     {notice && <p className={`notice${noticeKind === 'error' ? ' notice-error' : ''}`} role="alert">{notice}</p>}
 
-    <div className="import-grid">
-      <section className="settings-card">
-        <h2>Плейлист</h2>
-        <label className="import-field">
-          <span>Ссылка Deezer или Spotify</span>
-          <input className="settings-input import-input" placeholder="https://www.deezer.com/playlist/… или open.spotify.com/playlist/…"
-            value={url} onChange={event => setUrl(event.currentTarget.value)} />
-        </label>
-        <div className="settings-actions">
-          <button type="button" className="primary" onClick={startImport} disabled={busy || running}>
-            {running ? 'Импорт идёт…' : 'Начать импорт'}
-          </button>
-          <button type="button" className="secondary" onClick={openWebSource} disabled={busy || running}>
-            Открыть YT Music
-          </button>
-        </div>
-        <p className="muted">
-          Deezer отдаёт список открыто. Spotify читается с публичной страницы — до 100 треков и без ISRC,
-          поэтому код находится через Deezer и MusicBrainz.
-        </p>
-        <p className="muted">
-          YT Music открывается в отдельном окне на вашей сессии: приложение не видит пароль, только cookies.
-        </p>
-      </section>
-
-      <section className="settings-card">
-        <h2>Проверка</h2>
-        <label className="import-field">
-          <span>Ключ AcoustID</span>
-          <input className="settings-input import-input" placeholder="из acoustid.org" value={acoustidKey}
-            onChange={event => setAcoustidKey(event.currentTarget.value)}
-            onBlur={() => void saveField('acoustidKey', acoustidKey)} />
-        </label>
-        <div className="settings-option import-option">
-          <div>
-            <span>Папка для аудио</span>
-            <p className="muted import-path">{settings.downloadDir || 'не выбрана'}</p>
-          </div>
-          <button type="button" className="secondary" onClick={chooseFolder} disabled={busy}>Выбрать папку</button>
-        </div>
-        <label className="settings-option import-option">
-          <span>Параллельных загрузок</span>
-          <input type="number" className="settings-input" min={1} max={5} value={String(settings.workers)}
-            onChange={event => void saveField('workers', Math.min(5, Math.max(1, Number(event.currentTarget.value) || 1)))} />
-        </label>
-        <div className="import-tools">
-          <div>
-            <strong>yt-dlp</strong>
-            <p className={tools.ytDlp.installed ? 'muted' : 'danger'}>{tools.ytDlp.installed ? 'установлен' : tools.ytDlp.hint}</p>
-          </div>
-          <div>
-            <strong>fpcalc (Chromaprint)</strong>
-            <p className={tools.fpcalc.installed ? 'muted' : 'danger'}>{tools.fpcalc.installed ? 'установлен' : tools.fpcalc.hint}</p>
-          </div>
-          <button type="button" className="secondary" onClick={installTools} disabled={busy}>Установить инструменты</button>
-        </div>
-      </section>
-    </div>
-
-    <details className="settings-card import-details">
-      <summary>
-        <span>Spotify Web API <span className="muted">— необязательно, для Premium-аккаунтов</span></span>
-      </summary>
-      <p className="muted">
-        Без подключения Spotify читается публичная страница плейлиста. Client ID нужен только для Web API:
-        Redirect URI <code>http://127.0.0.1:8888/callback</code>, аккаунт добавлен в User Management.
-      </p>
+    <section className="settings-card">
       <label className="import-field">
-        <span>Client ID Spotify</span>
-        <input className="settings-input import-input" placeholder="из developer.spotify.com" value={clientId}
-          onChange={event => setClientId(event.currentTarget.value)}
-          onBlur={() => void saveField('spotifyClientId', clientId)} />
+        <span>Ссылка на плейлист</span>
+        <input className="settings-input import-input" placeholder="Deezer, Spotify, Яндекс Музыка, ВК или SoundCloud"
+          value={url} onChange={event => setUrl(event.currentTarget.value)}
+          onKeyDown={event => { if (event.key === 'Enter' && !busy && !running) void startImport() }} />
       </label>
       <div className="settings-actions">
-        {settings.spotifyConnected
-          ? <span className="import-badge is-ready">Аккаунт подключён</span>
-          : <button type="button" className="secondary" onClick={connectSpotify} disabled={busy || awaitingSpotify}>
-            {awaitingSpotify ? 'Ждём подтверждения…' : 'Подключить Spotify'}
-          </button>}
-        {settings.spotifyConnected && <button type="button" className="secondary" onClick={disconnectSpotify} disabled={busy}>Отключить</button>}
+        <button type="button" className="primary" onClick={startImport} disabled={busy || running}>
+          {running ? 'Импорт идёт…' : busy ? 'Готовим…' : noticeKind === 'error' ? 'Повторить' : 'Импортировать'}
+        </button>
       </div>
-    </details>
+
+      <div className="import-format" role="group" aria-label="Формат файлов">
+        <span className="muted">Формат файлов</span>
+        <label>
+          <input type="radio" name="import-format" checked={settings.format === 'm4a'}
+            onChange={() => void saveField('format', 'm4a')} disabled={busy} />
+          <span>m4a — играет на телефоне и в машине</span>
+        </label>
+        <label>
+          <input type="radio" name="import-format" checked={settings.format === 'original'}
+            onChange={() => void saveField('format', 'original')} disabled={busy} />
+          <span>Оригинал (webm/opus) — без перекодирования</span>
+        </label>
+      </div>
+
+      <div className="import-sources">
+        <span className="muted">Или откройте сервис и войдите в свой аккаунт:</span>
+        <div className="settings-actions">
+          {webSourceProviders.map(provider => <button key={provider} type="button" className="secondary"
+            onClick={() => void openWebSource(provider)} disabled={busy || running}>
+            {providerHints[provider]}
+          </button>)}
+        </div>
+        <p className="muted">
+          Deezer и Spotify читаются по ссылке без входа. Остальные сервисы открываются внутри mustplay:
+          пароль вводится на их странице и приложению не передаётся.
+        </p>
+      </div>
+    </section>
 
     {activeJob && <section className="settings-card import-progress" aria-label="Ход импорта">
       <header className="import-progress-head">
@@ -530,12 +558,12 @@ export function ImportPanel({ active }: { active: boolean }) {
             {itemQuery(current)} <span className="muted">· {itemLabels[current.status]}</span>
             {counts.active.length > 1 && <span className="muted"> · ещё {counts.active.length - 1}</span>}
           </span>
-          : <span className="muted">{running ? 'Готовим следующий трек…' : activeJob.message ?? 'Нет активного трека'}</span>}
+          : <span className="muted">{running ? 'Готовим следующий трек…' : activeJob.message ?? 'Импорт завершён'}</span>}
       </div>
 
       <div className="import-counters">
         <div className="import-counter"><span>Подтверждено</span><strong>{counts.verified}</strong></div>
-        <div className="import-counter"><span>Отброшено</span><strong>{counts.rejected}</strong></div>
+        <div className="import-counter"><span>Не подтверждено</span><strong>{counts.rejected}</strong></div>
         <div className="import-counter"><span>С ошибкой</span><strong>{counts.failed}</strong></div>
         <div className="import-counter"><span>Осталось</span><strong>{counts.pending}</strong></div>
       </div>
@@ -545,12 +573,21 @@ export function ImportPanel({ active }: { active: boolean }) {
         {' · '}начато в {formatClock(activeJob.createdAt)}
         {' · '}{running ? 'прошло' : 'заняло'} {formatElapsed(activeJob.createdAt, activeJob.finishedAt, now)}
       </p>
+
+      {activeJob.status === 'done' && activeJob.playlistId && <div className="settings-actions import-result-actions">
+        <button type="button" className="primary" onClick={() => onOpenPlaylist(activeJob.playlistId!, true)}>
+          Слушать
+        </button>
+        <button type="button" className="secondary" onClick={() => onOpenPlaylist(activeJob.playlistId!, false)}>
+          Открыть плейлист
+        </button>
+      </div>}
     </section>}
 
     <section className="settings-card">
-      <h2>Задания</h2>
+      <h2>История</h2>
       {jobs.length === 0
-        ? <p className="muted">Заданий пока нет. Начните с публичного плейлиста Deezer или Spotify.</p>
+        ? <p className="muted">Импортируйте первый плейлист — он появится здесь.</p>
         : <div className="import-job-list">
           {jobs.map(summary => <button key={summary.id} type="button" className="import-job"
             aria-current={summary.id === activeJob?.id ? 'true' : undefined}
@@ -565,7 +602,7 @@ export function ImportPanel({ active }: { active: boolean }) {
 
     {activeJob && <section className="settings-card">
       <header className="import-log-head">
-        <h2>Лог треков</h2>
+        <h2>Треки</h2>
         {settings.downloadDir && <button type="button" className="text-button"
           onClick={() => void window.mustplay.openPipelineFolder()}>Открыть папку с аудио</button>}
       </header>
@@ -575,21 +612,100 @@ export function ImportPanel({ active }: { active: boolean }) {
           <div className="import-log-main">
             <strong>{item.title}</strong>
             <span className="muted">
-              {item.artist ?? '—'}
+              {item.artist ?? 'неизвестный исполнитель'}
               {item.album ? ` · ${item.album}` : ''}
-              {item.isrc ? ` · ISRC ${item.isrc}` : ''}
+              {formatDuration(item.durationSeconds) ? ` · ${formatDuration(item.durationSeconds)}` : ''}
             </span>
-            <span className="import-log-message">{item.filePath ?? item.message}</span>
+            {item.status === 'rejected' && <span className="import-log-message">{item.message}</span>}
+            {item.status === 'failed' && <span className="import-log-message">{item.message ?? 'Не удалось скачать'}</span>}
+            <details className="import-log-details">
+              <summary>Подробности</summary>
+              <p className="muted">
+                {item.cached
+                  ? 'Этот трек уже был проверен раньше — скачивать заново не пришлось.'
+                  : methodLabel(item) ? `Подтверждено ${methodLabel(item)}${item.confidence != null ? ` · совпадение ${Math.round(item.confidence * 100)}%` : ''}` : item.message}
+                {item.isrc ? ` · код трека ${item.isrc}` : ''}
+              </p>
+            </details>
           </div>
           <div className="import-log-state">
+            {item.cached && <span className="import-badge is-ready">Уже в библиотеке</span>}
             <span>{itemLabels[item.status]}</span>
-            <span className="muted">
-              {item.method !== 'none' ? item.method : '—'}
-              {item.confidence != null ? ` · ${Math.round(item.confidence * 100)}%` : ''}
-            </span>
+            {(item.status === 'rejected' || item.status === 'failed') && <div className="import-log-actions">
+              <button type="button" className="text-button" disabled={retrying === item.id}
+                onClick={() => void retryItem(item)}>
+                {retrying === item.id ? 'Пробуем…' : item.status === 'rejected' ? 'Другая версия' : 'Повторить'}
+              </button>
+              {item.status === 'rejected' && <button type="button" className="text-button" disabled={retrying === item.id}
+                onClick={() => void skipItem(item)}>Пропустить</button>}
+            </div>}
           </div>
         </div>)}
       </div>
     </section>}
+
+    <details className="settings-card import-details">
+      <summary>Дополнительно</summary>
+      <p className="muted">
+        Инструменты импорта (yt-dlp и fpcalc) ставятся автоматически при первом импорте.
+        Ключ AcoustID нужен для сверки отпечатков — встроенного ключа приложения хватает,
+        но можно указать свой с acoustid.org.
+      </p>
+      <label className="import-field">
+        <span>Ключ AcoustID</span>
+        <input className="settings-input import-input" placeholder="необязательно" value={acoustidKey}
+          onChange={event => setAcoustidKey(event.currentTarget.value)}
+          onBlur={() => void saveField('acoustidKey', acoustidKey)} />
+      </label>
+      <div className="settings-option import-option">
+        <div>
+          <span>Папка для аудио</span>
+          <p className="muted import-path">{settings.downloadDir || 'появится при первом импорте'}</p>
+        </div>
+        <button type="button" className="secondary" onClick={chooseFolder} disabled={busy}>Выбрать папку</button>
+      </div>
+      <label className="settings-option import-option">
+        <span>Параллельных загрузок</span>
+        <input type="number" className="settings-input" min={1} max={5} value={String(settings.workers)}
+          onChange={event => void saveField('workers', Math.min(5, Math.max(1, Number(event.currentTarget.value) || 1)))} />
+      </label>
+      <div className="import-tools">
+        <div>
+          <strong>yt-dlp</strong>
+          <p className={tools.ytDlp.installed ? 'muted' : 'danger'}>{tools.ytDlp.installed ? 'установлен' : tools.ytDlp.hint}</p>
+        </div>
+        <div>
+          <strong>fpcalc (Chromaprint)</strong>
+          <p className={tools.fpcalc.installed ? 'muted' : 'danger'}>{tools.fpcalc.installed ? 'установлен' : tools.fpcalc.hint}</p>
+        </div>
+        <button type="button" className="secondary" onClick={installTools} disabled={busy}>
+          {toolsReady ? 'Проверить снова' : 'Установить инструменты'}
+        </button>
+      </div>
+
+      <details className="import-details-nested">
+        <summary>
+          <span>Spotify Web API <span className="muted">— необязательно, для Premium-аккаунтов</span></span>
+        </summary>
+        <p className="muted">
+          Без подключения Spotify читается публичная страница плейлиста. Client ID нужен только для Web API:
+          Redirect URI <code>http://127.0.0.1:8888/callback</code>, аккаунт добавлен в User Management.
+        </p>
+        <label className="import-field">
+          <span>Client ID Spotify</span>
+          <input className="settings-input import-input" placeholder="из developer.spotify.com" value={clientId}
+            onChange={event => setClientId(event.currentTarget.value)}
+            onBlur={() => void saveField('spotifyClientId', clientId)} />
+        </label>
+        <div className="settings-actions">
+          {settings.spotifyConnected
+            ? <span className="import-badge is-ready">Аккаунт подключён</span>
+            : <button type="button" className="secondary" onClick={connectSpotify} disabled={busy || awaitingSpotify}>
+              {awaitingSpotify ? 'Ждём подтверждения…' : 'Подключить Spotify'}
+            </button>}
+          {settings.spotifyConnected && <button type="button" className="secondary" onClick={disconnectSpotify} disabled={busy}>Отключить</button>}
+        </div>
+      </details>
+    </details>
   </section>
 }

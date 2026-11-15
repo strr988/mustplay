@@ -1,11 +1,11 @@
 import type {
-  AcoustidRecording, AudioCandidate, PipelineItemStatus, PipelineJob, PipelineJobStatus,
+  AcoustidRecording, AudioCandidate, PipelineDownloadFormat, PipelineItemStatus, PipelineJob, PipelineJobSummary,
   PipelineMethod, PipelineProvider, PipelineSettings, PipelineStatus,
   PipelineTools, PipelineTrackInput, ProviderPlaylist, WebSourceProvider,
 } from '../shared/pipeline'
-import { pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate, webSourceProviders } from '../shared/pipeline'
+import { builtInAcoustidKey, pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate, pipelineWorkerLimits, webSourceProviders } from '../shared/pipeline'
 import { LibraryStore } from '../main/library-store'
-import { runTracks } from './orchestrator'
+import { runTrack, runTracks } from './orchestrator'
 import type { TrackDeps } from './orchestrator'
 import { DeferredFingerprinter, AcoustidKeyError } from './fingerprint'
 import type { AcoustidInput } from './fingerprint'
@@ -19,13 +19,28 @@ import { RateLimiter, retry } from './limiter'
 import { ToolManager } from './tools'
 import { shell } from 'electron'
 import { existsSync } from 'node:fs'
+import { isAbsolute, relative } from 'node:path'
 
 const defaultSettings: PipelineSettings = {
   spotifyClientId: '',
-  acoustidKey: '',
+  acoustidKey: builtInAcoustidKey,
   downloadDir: '',
   workers: pipelineImportConcurrency,
+  format: 'm4a',
   spotifyConnected: false,
+}
+
+function isInside(directory: string, path: string): boolean {
+  const rel = relative(directory, path)
+  return !!rel && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+export interface PipelineServiceHooks {
+  /**
+   * Called after an import finishes so the verified files become library
+   * tracks and a playlist. Returns the playlist ID, if one was created.
+   */
+  importJob?: (job: PipelineJob, downloadDir: string) => Promise<string | null>
 }
 
 export class PipelineService {
@@ -53,9 +68,27 @@ export class PipelineService {
   constructor(
     store: LibraryStore,
     tools: ToolManager,
+    private readonly hooks: PipelineServiceHooks = {},
   ) {
     this.store = store
     this.tools = tools
+    for (const job of this.store.loadPipelineJobs()) {
+      // A job that was running when the app closed cannot continue.
+      if (job.status === 'running') {
+        job.status = 'cancelled'
+        job.message = 'Приложение было закрыто до завершения импорта'
+        job.finishedAt = job.finishedAt ?? new Date().toISOString()
+        for (const item of job.items) {
+          if (item.status === 'pending' || item.status === 'searching' ||
+              item.status === 'downloading' || item.status === 'verifying') {
+            item.status = 'skipped'
+            item.message = 'Импорт остановлен'
+          }
+        }
+        this.store.savePipelineJob(job)
+      }
+      this.jobs.set(job.id, job)
+    }
     const msPerRequest = (seconds: number, requests: number) => (1000 * seconds) / requests
     this.acoustidLimit = new RateLimiter(msPerRequest(pipelineVerificationRate.perSeconds, pipelineVerificationRate.requests))
     this.musicbrainzLimit = new RateLimiter(msPerRequest(pipelineMetadataRate.perSeconds, pipelineMetadataRate.requests))
@@ -89,19 +122,33 @@ export class PipelineService {
     return crypto.randomUUID()
   }
 
+  /** Downloads the two binaries on first use; the user does not configure anything. */
+  async ensureTools(): Promise<PipelineTools> {
+    const initial = await this.tools.status()
+    if (initial.ytDlp.installed && initial.fpcalc.installed) return initial
+    const installed = await this.tools.install()
+    if (!installed.ytDlp.installed || !installed.fpcalc.installed) {
+      const reasons = [installed.ytDlp, installed.fpcalc]
+        .filter(tool => !tool.installed)
+        .map(tool => tool.hint)
+        .join(' ')
+      throw new Error(`Не удалось установить инструменты импорта. ${reasons}`)
+    }
+    return installed
+  }
+
   /** Validates everything that must be in place before any playlist is fetched. */
   private async readySettings(
     settings: PipelineSettings,
-  ): Promise<{ downloadDir: string; acoustidKey: string }> {
+  ): Promise<{ downloadDir: string; acoustidKey: string; format: PipelineDownloadFormat }> {
     if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
     const downloadDir = settings.downloadDir
-    if (!downloadDir) throw new Error('Укажите папку для скачивания в настройках импорта')
-    const acoustidKey = settings.acoustidKey
-    if (!acoustidKey) throw new Error('Укажите ключ AcoustID в настройках импорта')
-    const tools = await this.tools.status()
-    if (!tools.ytDlp.installed) throw new Error(tools.ytDlp.hint)
-    if (!tools.fpcalc.installed) throw new Error(tools.fpcalc.hint)
-    return { downloadDir, acoustidKey }
+    if (!downloadDir) throw new Error('Не удалось определить папку для скачивания')
+    const acoustidKey = settings.acoustidKey.trim() || builtInAcoustidKey
+    if (!acoustidKey) throw new Error('Укажите ключ AcoustID в дополнительных настройках импорта')
+    await this.ensureTools()
+    const format: PipelineDownloadFormat = settings.format === 'original' ? 'original' : 'm4a'
+    return { downloadDir, acoustidKey, format }
   }
 
   async startPipelineImport(url: string, settings: PipelineSettings, workers: number): Promise<PipelineJob> {
@@ -114,7 +161,11 @@ export class PipelineService {
       throw new Error('YT Music импортируется через веб-сессию: нажмите «Открыть YT Music» и войдите в свой аккаунт')
     }
     if (stubProviders.has(ref.provider)) {
-      throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} ещё не реализована`)
+      if ((webSourceProviders as readonly string[]).includes(ref.provider)) {
+        const label = pipelineProviderLabels[ref.provider]
+        throw new Error(`${label} импортируется через веб-сессию: нажмите «${label}» в блоке сервисов и войдите в свой аккаунт`)
+      }
+      throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} не поддерживается: нужен платный аккаунт`)
     }
     const ready = await this.readySettings(settings)
     if (ref.provider === 'deezer') {
@@ -156,7 +207,7 @@ export class PipelineService {
     playlistUrl: string,
     playlist: ProviderPlaylist,
     sourceNote: string | null,
-    settings: { downloadDir: string; acoustidKey: string },
+    settings: { downloadDir: string; acoustidKey: string; format: PipelineDownloadFormat },
     workers: number,
   ): PipelineJob {
     if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
@@ -172,12 +223,14 @@ export class PipelineService {
       finishedAt: null,
       message: null,
       sourceNote: sourceNote ?? playlist.note ?? null,
+      playlistId: null,
       items: playlist.tracks.map((track, index) => ({
         id: crypto.randomUUID(),
         position: index,
         title: track.title,
         artist: track.artist,
         album: track.album,
+        genres: track.genres ?? [],
         durationSeconds: track.durationSeconds,
         isrc: track.isrc,
         status: 'pending' as PipelineItemStatus,
@@ -185,6 +238,8 @@ export class PipelineService {
         confidence: null,
         filePath: null,
         message: track.sourceUrl ? 'Прямая ссылка на запись' : 'В очереди',
+        candidateId: null,
+        cached: false,
         updatedAt: new Date().toISOString(),
       })),
     }
@@ -192,15 +247,24 @@ export class PipelineService {
     this.currentJobId = job.id
     this.abortController = new AbortController()
     this.abortReason = null
+    this.persist(job)
 
     void this.runJob(job, playlist.tracks, settings, workers)
     return job
   }
 
+  private persist(job: PipelineJob): void {
+    try {
+      this.store.savePipelineJob(job)
+    } catch {
+      // Losing history must never break an import that is already running.
+    }
+  }
+
   private async runJob(
     job: PipelineJob,
     tracks: readonly PipelineTrackInput[],
-    settings: { downloadDir: string; acoustidKey: string },
+    settings: { downloadDir: string; acoustidKey: string; format: PipelineDownloadFormat },
     workers: number,
   ): Promise<void> {
     const signal = this.abortController?.signal
@@ -218,6 +282,8 @@ export class PipelineService {
           item.confidence = outcome.confidence
           item.filePath = outcome.filePath
           item.message = outcome.message
+          item.candidateId = outcome.candidateId
+          item.cached = outcome.cached
           item.updatedAt = new Date().toISOString()
           if (outcome.status !== 'skipped') {
             processed++
@@ -225,11 +291,13 @@ export class PipelineService {
             else failed++
           }
           job.message = `Обработано ${processed} из ${job.total} (подтверждено ${verified}, отброшено ${failed})`
+          this.persist(job)
         })
     } catch (error) {
       job.status = 'failed'
       job.message = error instanceof Error ? error.message : 'Импорт прерван'
       job.finishedAt = new Date().toISOString()
+      this.persist(job)
       return
     } finally {
       this.abortController = null
@@ -257,14 +325,24 @@ export class PipelineService {
         }
       }
     }
+    if (job.status === 'done' && this.hooks.importJob) {
+      try {
+        job.playlistId = await this.hooks.importJob(job, settings.downloadDir)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        job.message = `${job.message} Не удалось добавить треки в библиотеку: ${reason}`
+      }
+    }
+    this.persist(job)
   }
 
   private depsFor(
     track: PipelineTrackInput,
     index: number,
     jobId: string,
-    settings: { downloadDir: string; acoustidKey: string },
+    settings: { downloadDir: string; acoustidKey: string; format: PipelineDownloadFormat },
     signal: AbortSignal | undefined,
+    options: { excludedCandidates?: ReadonlySet<string>; useCache?: boolean } = {},
   ): TrackDeps {
     const update = (status: PipelineItemStatus) => {
       const item = this.jobs.get(jobId)?.items[index]
@@ -274,7 +352,7 @@ export class PipelineService {
 
     const cachedFile = async (isrc: string): Promise<string | null> => {
       const cached = this.store.getCachedFileByIsrc(isrc)
-      return cached && existsSync(cached) ? cached : null
+      return cached && existsSync(cached) && isInside(settings.downloadDir, cached) ? cached : null
     }
 
     const resolveIsrc = async (isrc: string): Promise<PipelineTrackInput | null> => {
@@ -311,7 +389,7 @@ export class PipelineService {
     const download = async (candidate: AudioCandidate): Promise<string> => {
       const ytdlp = this.ytdlp()
       if (!ytdlp) throw new Error('yt-dlp не установлен')
-      return await ytdlp.download(candidate, settings.downloadDir, signal)
+      return await ytdlp.download(candidate, settings.downloadDir, signal, settings.format)
     }
 
     const fingerprint = async (path: string) => {
@@ -355,7 +433,11 @@ export class PipelineService {
       await unlink(filePath).catch(() => {})
     }
 
-    return { cachedFile, resolveIsrc, resolveTrack, search, download, fingerprint, lookupAcoustid, remember, discard, update, isCancelled }
+    return {
+      cachedFile, resolveIsrc, resolveTrack, search, download, fingerprint, lookupAcoustid, remember, discard, update, isCancelled,
+      excludedCandidates: options.excludedCandidates,
+      useCache: options.useCache,
+    }
   }
 
   async cancelPipelineImport(): Promise<void> {
@@ -365,6 +447,7 @@ export class PipelineService {
       job.status = 'cancelled'
       job.finishedAt = new Date().toISOString()
       job.message = 'Остановлено пользователем'
+      this.persist(job)
     }
     this.abortController = null
   }
@@ -373,11 +456,107 @@ export class PipelineService {
     return this.jobs.get(id) ?? null
   }
 
-  listPipelineJobs(): { id: string; provider: PipelineProvider; playlistName: string; status: PipelineJobStatus; total: number; verified: number; createdAt: string }[] {
-    return Array.from(this.jobs.values()).map(job => ({
-      id: job.id, provider: job.provider, playlistName: job.playlistName, status: job.status,
-      total: job.total, verified: job.items.filter(i => i.status === 'verified').length, createdAt: job.createdAt,
-    }))
+  listPipelineJobs(): PipelineJobSummary[] {
+    return Array.from(this.jobs.values())
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(job => ({
+        id: job.id, provider: job.provider, playlistName: job.playlistName, status: job.status,
+        total: job.total, verified: job.items.filter(i => i.status === 'verified').length,
+        createdAt: job.createdAt, playlistId: job.playlistId,
+      }))
+  }
+
+  /** Marks a rejected track as intentionally left out, without chasing versions. */
+  skipPipelineItem(jobId: string, itemId: string): PipelineJob {
+    const job = this.jobs.get(jobId)
+    if (!job) throw new Error('Задание не найдено')
+    const item = job.items.find(entry => entry.id === itemId)
+    if (!item) throw new Error('Трек не найден в задании')
+    item.status = 'skipped'
+    item.message = 'Пропущено пользователем'
+    item.updatedAt = new Date().toISOString()
+    this.persist(job)
+    return job
+  }
+
+  /** Retries one track of a finished job, either with the next download
+   * candidate («Другая версия») or the same one again («Повторить»).
+   * The job stays the same, so its history and playlist links remain valid.
+   */
+  async retryPipelineItem(
+    jobId: string,
+    itemId: string,
+    settings: PipelineSettings,
+    workers: number,
+  ): Promise<PipelineJob> {
+    if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
+    const job = this.jobs.get(jobId)
+    if (!job) throw new Error('Задание не найдено')
+    const item = job.items.find(entry => entry.id === itemId)
+    if (!item) throw new Error('Трек не найден в задании')
+    const ready = await this.readySettings(settings)
+    if (workers < pipelineWorkerLimits.min) throw new Error('Некорректное число загрузок')
+
+    const track: PipelineTrackInput = {
+      title: item.title,
+      artist: item.artist,
+      album: item.album,
+      durationSeconds: item.durationSeconds,
+      isrc: item.isrc,
+      genres: item.genres,
+      providerId: null,
+    }
+    const excluded = new Set<string>(item.candidateId ? [item.candidateId] : [])
+    this.currentJobId = job.id
+    this.abortController = new AbortController()
+    this.abortReason = null
+    item.status = 'pending'
+    item.message = 'Повторяем'
+    item.updatedAt = new Date().toISOString()
+    job.status = 'running'
+    job.finishedAt = null
+    this.persist(job)
+
+    try {
+      const index = job.items.indexOf(item)
+      const outcome = await runTrack(track, this.depsFor(track, index, job.id, ready, this.abortController.signal, {
+        excludedCandidates: excluded,
+        useCache: false,
+      }))
+      item.status = outcome.status
+      item.method = outcome.method
+      item.confidence = outcome.confidence
+      item.filePath = outcome.filePath
+      item.message = outcome.message
+      item.candidateId = outcome.candidateId ?? item.candidateId
+      item.cached = outcome.cached
+      item.updatedAt = new Date().toISOString()
+    } catch (error) {
+      item.status = 'failed'
+      item.message = error instanceof Error ? error.message : 'Повтор не удался'
+      item.updatedAt = new Date().toISOString()
+    } finally {
+      this.abortController = null
+      this.abortReason = null
+    }
+
+    const unfinished = job.items.some(entry =>
+      entry.status === 'pending' || entry.status === 'searching' ||
+      entry.status === 'downloading' || entry.status === 'verifying')
+    const confirmed = job.items.filter(entry => entry.status === 'verified').length
+    job.status = unfinished ? 'running' : 'done'
+    job.finishedAt = unfinished ? null : new Date().toISOString()
+    job.message = `Подтверждено ${confirmed} из ${job.total}.`
+    if (!unfinished && this.hooks.importJob) {
+      try {
+        job.playlistId = await this.hooks.importJob(job, ready.downloadDir) ?? job.playlistId
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        job.message = `${job.message} Не удалось добавить трек в библиотеку: ${reason}`
+      }
+    }
+    this.persist(job)
+    return job
   }
 
   spotifyConnectUrl(clientId: string): { url: string; state: string } {

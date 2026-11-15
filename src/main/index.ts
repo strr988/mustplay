@@ -11,7 +11,7 @@ import type { PipelineSettings, WebSourceBounds, WebSourceProvider } from '../sh
 import { defaultSettings, PipelineService } from '../pipeline/service'
 import { ToolManager } from '../pipeline/tools'
 import { waitForSpotifyCallback } from '../pipeline/spotify-auth'
-import { WebSourceManager } from './web-source'
+import { WebSourceManager, setWebSourceYtDlpResolver } from './web-source'
 import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
 import { readCursorPreset } from './cursor-presets'
@@ -327,12 +327,19 @@ async function start(): Promise<void> {
   } catch {
     // First run: keep defaults.
   }
+  // The first import should just work: the folder is created by the app and
+  // nobody has to configure paths or tools beforehand.
+  if (!pipelineSettings.downloadDir) pipelineSettings.downloadDir = join(app.getPath('music'), 'mustplay')
+  await mkdir(pipelineSettings.downloadDir, { recursive: true }).catch(() => {})
   // Access tokens live in memory only, so a previous session cannot stay "connected".
   pipelineSettings.spotifyConnected = false
+  const toolManager = new ToolManager(join(userData, 'tools'))
   pipelineService = new PipelineService(
     library.pipelineStore(),
-    new ToolManager(join(userData, 'tools')),
+    toolManager,
+    { importJob: (job, downloadDir) => library.importPipelineJob(job, downloadDir) },
   )
+  setWebSourceYtDlpResolver(() => toolManager.binary('ytDlp'))
   void pipelineService.toolsStatus().catch(() => {})
 
   const playerSession = session.fromPartition('mustplay')
@@ -456,6 +463,7 @@ function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSett
   if (typeof patch.workers === 'number' && Number.isFinite(patch.workers)) {
     next.workers = Math.min(5, Math.max(1, Math.round(patch.workers)))
   }
+  if (patch.format === 'm4a' || patch.format === 'original') next.format = patch.format
   return next
 }
 
@@ -546,6 +554,18 @@ function registerPipelineIpc(): void {
     return service.listPipelineJobs()
   })
 
+  ipcMain.handle(channels.retryPipelineItem, async (event, jobId: unknown, itemId: unknown) => {
+    senderWindow(event)
+    if (typeof jobId !== 'string' || typeof itemId !== 'string') throw new Error('Некорректный трек для повтора')
+    return await service.retryPipelineItem(jobId, itemId, pipelineSettings, pipelineSettings.workers)
+  })
+
+  ipcMain.handle(channels.skipPipelineItem, (event, jobId: unknown, itemId: unknown) => {
+    senderWindow(event)
+    if (typeof jobId !== 'string' || typeof itemId !== 'string') throw new Error('Некорректный трек')
+    return service.skipPipelineItem(jobId, itemId)
+  })
+
   ipcMain.handle(channels.openPipelineFolder, async (event) => {
     senderWindow(event)
     if (pipelineSettings.downloadDir) await shell.openPath(pipelineSettings.downloadDir)
@@ -577,6 +597,9 @@ function registerPipelineIpc(): void {
 
   ipcMain.handle(channels.importWebSourcePlaylist, async (event) => {
     senderWindow(event)
+    // Reading SoundCloud/VK playlists needs yt-dlp, so make sure it is installed
+    // before the user is told to open a playlist.
+    await service.ensureTools()
     const source = await webSources.importPlaylist()
     return await service.startWebSourceImport(source, pipelineSettings, pipelineSettings.workers)
   })

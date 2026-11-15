@@ -105,7 +105,7 @@ export function judgeFingerprint(
   downloadedDuration: number,
 ): VerificationVerdict {
   if (!recordings.length) {
-    return { status: 'rejected', method: 'none', confidence: 0, message: 'AcoustID не распознал отпечаток' }
+    return { status: 'rejected', method: 'none', confidence: 0, message: 'Не удалось распознать запись. Возможно, на YouTube другая версия.' }
   }
   let best: AcoustidRecording | null = null
   let bestConfidence = -1
@@ -118,21 +118,20 @@ export function judgeFingerprint(
       best = recording
     }
   }
-  if (!best) return { status: 'rejected', method: 'none', confidence: 0, message: 'Не найдено совпадений' }
+  if (!best) return { status: 'rejected', method: 'none', confidence: 0, message: 'Не удалось распознать запись. Возможно, на YouTube другая версия.' }
 
   const expectedIsrc = track.isrc ? normalizeIsrc(track.isrc) : null
   const isrcMatch = expectedIsrc !== null && best.isrcs.some(isrc => normalizeIsrc(isrc) === expectedIsrc)
   const confidence = Math.round(Math.max(0, Math.min(1, bestConfidence)) * 100) / 100
-  const found = `${best.artist ?? 'неизвестный исполнитель'} — ${best.title}`
   if (isrcMatch) {
-    return { status: 'verified', method: 'isrc', confidence, message: `ISRC совпал: ${expectedIsrc}` }
+    return { status: 'verified', method: 'isrc', confidence, message: 'Совпал код трека' }
   }
   if (confidence >= 0.55 && best.score >= 0.5) {
-    return { status: 'verified', method: 'acoustid', confidence, message: `AcoustID: ${found}` }
+    return { status: 'verified', method: 'acoustid', confidence, message: 'Совпал отпечаток записи' }
   }
   return {
     status: 'rejected', method: 'none', confidence,
-    message: `Не совпало (${Math.round(confidence * 100)}%): AcoustID вернул ${found}`,
+    message: 'На YouTube нашлась другая версия — не смогли подтвердить, что это тот же трек.',
   }
 }
 

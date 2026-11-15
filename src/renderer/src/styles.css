@@ -763,6 +763,30 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
 .import-field { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
 .import-input { width: 100%; }
 .import-option { align-items: flex-start; }
+.import-format {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.import-format label { display: flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
+.import-format input { accent-color: var(--accent); }
+.import-sources {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.import-sources .settings-actions { flex-wrap: wrap; }
+.import-result-actions { padding-top: 4px; }
+.import-details-nested { margin-top: 4px; }
+.import-details-nested summary { font-size: 13px; }
+.import-log-details summary { width: fit-content; color: var(--muted); font-size: 11px; cursor: pointer; }
+.import-log-details summary:hover { color: var(--accent); }
+.import-log-details p { margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.import-log-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .import-path {
   max-width: 380px;
   margin-top: 3px;
