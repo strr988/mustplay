@@ -417,6 +417,28 @@ describe('diagnostics for a broken import', () => {
     expect((error as Error).message).toBe('AcoustID: HTTP 500')
   })
 
+  it('asks AcoustID for recordings with their ISRCs', async () => {
+    const fingerprinter = new Fingerprinter('fpcalc')
+    let requestBody = ''
+    const original = globalThis.fetch
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = String(init?.body ?? '')
+      return new Response(JSON.stringify({ status: 'ok', results: [] }), { status: 200 })
+    }) as typeof fetch
+    try {
+      await fingerprinter.lookup('KEY', { durationSeconds: 244, fingerprint: 'FP' })
+    } finally {
+      globalThis.fetch = original
+    }
+    const params = new URLSearchParams(requestBody)
+    // AcoustID splits `meta` on whitespace; a literal "+" silently returns
+    // results without recordings, which looks like "nothing matched".
+    expect(params.get('meta')).toBe('recordings isrcs')
+    expect(params.get('client')).toBe('KEY')
+    expect(params.get('fingerprint')).toBe('FP')
+    expect(params.get('duration')).toBe('244')
+  })
+
   it('does not retry a permanent failure', async () => {
     let calls = 0
     await expect(retry(async () => {

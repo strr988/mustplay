@@ -101,7 +101,11 @@ export class Fingerprinter {
     body.set('client', client)
     body.set('fingerprint', input.fingerprint)
     body.set('duration', String(input.durationSeconds))
-    body.set('meta', 'recordings+isrcs')
+    // AcoustID splits `meta` on whitespace. The docs write the values with "+",
+    // but that only works because a "+" in a URL query means a space; sending a
+    // literal "+" is accepted silently and returns results without any metadata,
+    // which looks like "no matching recording" for every track.
+    body.set('meta', 'recordings isrcs')
 
     const response = await fetch(acoustidLookupUrl, {
       method: 'POST',
