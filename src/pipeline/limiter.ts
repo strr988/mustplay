@@ -28,14 +28,21 @@ export class RateLimiter {
   }
 }
 
-export async function retry<T>(task: () => Promise<T>, attempts = 3, backoffMs = 750): Promise<T> {
+export async function retry<T>(
+  task: () => Promise<T>,
+  attempts = 3,
+  backoffMs = 750,
+  shouldRetry: (error: unknown) => boolean = () => true,
+): Promise<T> {
   let error: unknown
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       return await task()
     } catch (failure) {
       error = failure
-      if (attempt + 1 < attempts) await delay(backoffMs * (attempt + 1))
+      // Permanent failures (a rejected key, a bad request) must not be retried.
+      if (attempt + 1 >= attempts || !shouldRetry(failure)) break
+      await delay(backoffMs * (attempt + 1))
     }
   }
   throw error

@@ -8,7 +8,9 @@ import {
 } from '../src/metadata/providers/ytmusic'
 import { parseSpotifyPage } from '../src/metadata/providers/spotify'
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
-import { buildSearchQuery, downloadArguments, parseDownloadedPath, parseSearchOutput } from '../src/audio/ytdlp'
+import { buildSearchQuery, describeYtDlpFailure, downloadArguments, parseDownloadedPath, parseSearchOutput } from '../src/audio/ytdlp'
+import { AcoustidKeyError, Fingerprinter } from '../src/pipeline/fingerprint'
+import { retry } from '../src/pipeline/limiter'
 import { judgeFingerprint, pickCandidate } from '../src/pipeline/match'
 import { runTrack } from '../src/pipeline/orchestrator'
 import type { AudioCandidate, PipelineTrackInput } from '../src/shared/pipeline'
@@ -374,5 +376,62 @@ describe('track pipeline dry run', () => {
     })
     expect(downloaded).toEqual(['https://www.youtube.com/watch?v=yt123'])
     expect(outcome).toMatchObject({ status: 'verified', method: 'isrc', filePath: 'C:/music/direct.webm' })
+  })
+})
+
+describe('diagnostics for a broken import', () => {
+  const withFetch = async <T>(response: () => Response, task: () => Promise<T>): Promise<T> => {
+    const original = globalThis.fetch
+    globalThis.fetch = (async () => response()) as typeof fetch
+    try {
+      return await task()
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+
+  it('turns a rejected AcoustID key into an actionable error', async () => {
+    const fingerprinter = new Fingerprinter('fpcalc')
+    const error = await withFetch(
+      () => new Response(JSON.stringify({ status: 'error', error: { code: 4, message: 'invalid API key' } }), { status: 400 }),
+      () => fingerprinter.lookup('KEY', { durationSeconds: 244, fingerprint: 'FP' }).then(
+        () => null,
+        (failure: unknown) => failure,
+      ),
+    )
+    expect(error).toBeInstanceOf(AcoustidKeyError)
+    expect((error as Error).message).toContain('acoustid.org/new-application')
+  })
+
+  it('keeps the AcoustID message for other failures', async () => {
+    const fingerprinter = new Fingerprinter('fpcalc')
+    const error = await withFetch(
+      () => new Response('', { status: 500 }),
+      () => fingerprinter.lookup('KEY', { durationSeconds: 244, fingerprint: 'FP' }).then(
+        () => null,
+        (failure: unknown) => failure,
+      ),
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(AcoustidKeyError)
+    expect((error as Error).message).toBe('AcoustID: HTTP 500')
+  })
+
+  it('does not retry a permanent failure', async () => {
+    let calls = 0
+    await expect(retry(async () => {
+      calls++
+      throw new AcoustidKeyError()
+    }, 3, 1, error => !(error instanceof AcoustidKeyError))).rejects.toBeInstanceOf(AcoustidKeyError)
+    expect(calls).toBe(1)
+  })
+
+  it('explains when yt-dlp cannot reach YouTube', () => {
+    const blocked = describeYtDlpFailure(new Error(
+      'ERROR: Unable to download API page: [SSL: INVALID_SESSION_ID] invalid session id',
+    ))
+    expect((blocked as Error).message).toContain('YouTube недоступен из этой сети')
+    const other = new Error('ERROR: Unsupported URL: https://example.com')
+    expect(describeYtDlpFailure(other)).toBe(other)
   })
 })

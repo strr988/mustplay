@@ -7,7 +7,7 @@ import { pipelineProviderLabels, pipelineImportConcurrency, pipelineVerification
 import { LibraryStore } from '../main/library-store'
 import { runTracks } from './orchestrator'
 import type { TrackDeps } from './orchestrator'
-import { DeferredFingerprinter } from './fingerprint'
+import { DeferredFingerprinter, AcoustidKeyError } from './fingerprint'
 import type { AcoustidInput } from './fingerprint'
 import { YtDlp } from '../audio/ytdlp'
 import { DeezerProvider } from '../metadata/providers/deezer'
@@ -38,6 +38,8 @@ export class PipelineService {
   private readonly jobs = new Map<string, PipelineJob>()
   private currentJobId: string | null = null
   private abortController: AbortController | null = null
+  /** Set when the pipeline stops itself, e.g. because AcoustID rejected the key. */
+  private abortReason: string | null = null
   private spotifyVerifier: string | null = null
   private spotifyState: string | null = null
   private spotifyToken: string | null = null
@@ -189,6 +191,7 @@ export class PipelineService {
     this.jobs.set(job.id, job)
     this.currentJobId = job.id
     this.abortController = new AbortController()
+    this.abortReason = null
 
     void this.runJob(job, playlist.tracks, settings, workers)
     return job
@@ -208,7 +211,6 @@ export class PipelineService {
     try {
       await runTracks(tracks, (track, index) => this.depsFor(track, index, job.id, settings, signal), workers,
         async (_track, outcome, index) => {
-          if (signal?.aborted) return
           const item = job.items[index]
           if (!item) return
           item.status = outcome.status
@@ -217,9 +219,11 @@ export class PipelineService {
           item.filePath = outcome.filePath
           item.message = outcome.message
           item.updatedAt = new Date().toISOString()
-          processed++
-          if (outcome.status === 'verified') verified++
-          else if (outcome.status === 'failed' || outcome.status === 'rejected') failed++
+          if (outcome.status !== 'skipped') {
+            processed++
+            if (outcome.status === 'verified') verified++
+            else failed++
+          }
           job.message = `Обработано ${processed} из ${job.total} (подтверждено ${verified}, отброшено ${failed})`
         })
     } catch (error) {
@@ -231,11 +235,28 @@ export class PipelineService {
       this.abortController = null
     }
 
-    job.status = signal?.aborted ? 'cancelled' : 'done'
     job.finishedAt = new Date().toISOString()
-    job.message = signal?.aborted
-      ? `Остановлено. Подтверждено ${verified} из ${job.total}.`
-      : `Завершено. Подтверждено ${verified} из ${job.total}, отброшено ${failed}.`
+    if (this.abortReason) {
+      job.status = 'failed'
+      job.message = `${this.abortReason}. Импорт остановлен: подтверждено ${verified} из ${job.total}.`
+    } else if (signal?.aborted) {
+      job.status = 'cancelled'
+      job.message = `Остановлено. Подтверждено ${verified} из ${job.total}.`
+    } else {
+      job.status = 'done'
+      job.message = `Завершено. Подтверждено ${verified} из ${job.total}, отброшено ${failed}.`
+    }
+    if (this.abortReason || signal?.aborted) {
+      // Tracks that never started would otherwise stay "pending" forever.
+      for (const item of job.items) {
+        if (item.status === 'pending' || item.status === 'searching' ||
+            item.status === 'downloading' || item.status === 'verifying') {
+          item.status = 'skipped'
+          item.message = 'Импорт остановлен'
+          item.updatedAt = new Date().toISOString()
+        }
+      }
+    }
   }
 
   private depsFor(
@@ -299,10 +320,21 @@ export class PipelineService {
     }
 
     const lookupAcoustid = async (input: AcoustidInput): Promise<AcoustidRecording[]> => {
-      return retry(async () => {
+      const lookup = async () => {
         const fingerprinter = await this.fingerprints.get()
         return this.acoustidLimit.run(() => fingerprinter.lookup(settings.acoustidKey, input))
-      }, 2, 1000)
+      }
+      try {
+        // A rejected key is permanent, so it must not be retried.
+        return await retry(lookup, 2, 1000, error => !(error instanceof AcoustidKeyError))
+      } catch (error) {
+        if (error instanceof AcoustidKeyError && !this.abortReason) {
+          // Every remaining track would fail the same way: stop the whole import.
+          this.abortReason = error.message
+          this.abortController?.abort()
+        }
+        throw error
+      }
     }
 
     const remember = async (t: PipelineTrackInput, filePath: string, verdict: { method: PipelineMethod; confidence: number; message: string }, fp: AcoustidInput) => {

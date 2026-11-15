@@ -6,6 +6,16 @@ import { runProcess } from './process'
 export const searchLimit = 5
 export const downloadTimeoutMs = 10 * 60 * 1000
 
+/** yt-dlp failures that mean "YouTube is unreachable", not "the query is bad". */
+const networkFailurePattern =
+  /(INVALID_SESSION_ID|SSL|CERTIFICATE|Connection reset|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timed out|getaddrinfo|Temporary failure in name resolution|urlopen error|HTTP Error 5\d\d|превышено время ожидания)/i
+
+/** Keeps the original yt-dlp text and adds a hint the user can act on. */
+export function describeYtDlpFailure(error: unknown): unknown {
+  if (!(error instanceof Error) || !networkFailurePattern.test(error.message)) return error
+  return new Error(`${error.message}. Похоже, YouTube недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
+}
+
 export function buildSearchQuery(track: Pick<PipelineTrackInput, 'title' | 'artist'>): string {
   const artist = track.artist?.trim()
   return artist ? `${artist} - ${track.title}` : track.title
@@ -81,15 +91,26 @@ export class YtDlp {
   constructor(private readonly binary: string) {}
 
   async search(track: Pick<PipelineTrackInput, 'title' | 'artist'>, signal?: AbortSignal): Promise<AudioCandidate[]> {
-    const { stdout } = await runProcess(this.binary, searchArguments(buildSearchQuery(track)), { timeoutMs: 60_000, signal })
-    return parseSearchOutput(stdout)
+    try {
+      const { stdout } = await runProcess(this.binary, searchArguments(buildSearchQuery(track)), { timeoutMs: 60_000, signal })
+      return parseSearchOutput(stdout)
+    } catch (error) {
+      if (signal?.aborted) throw error
+      throw describeYtDlpFailure(error)
+    }
   }
 
   async download(candidate: AudioCandidate, directory: string, signal?: AbortSignal): Promise<string> {
     await mkdir(directory, { recursive: true })
-    const { stdout } = await runProcess(this.binary, downloadArguments(candidate.url, directory), {
-      timeoutMs: downloadTimeoutMs, signal,
-    })
+    let stdout: string
+    try {
+      ({ stdout } = await runProcess(this.binary, downloadArguments(candidate.url, directory), {
+        timeoutMs: downloadTimeoutMs, signal,
+      }))
+    } catch (error) {
+      if (signal?.aborted) throw error
+      throw describeYtDlpFailure(error)
+    }
     const path = parseDownloadedPath(stdout)
     if (!path) throw new Error('yt-dlp не сообщил путь к файлу')
     return path

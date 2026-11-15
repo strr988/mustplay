@@ -12,7 +12,7 @@ interface AcoustidResult {
 
 interface AcoustidResponse {
   status?: string
-  error?: { message?: string }
+  error?: { code?: number; message?: string }
   results?: AcoustidResult[]
 }
 
@@ -63,6 +63,20 @@ export interface AcoustidInput {
   fingerprint: string
 }
 
+/** The service answered, but refused the application key. Retrying cannot help. */
+export class AcoustidKeyError extends Error {
+  constructor() {
+    super('AcoustID не принял ключ приложения. Проверьте ключ на acoustid.org/new-application')
+    this.name = 'AcoustidKeyError'
+  }
+}
+
+function acoustidError(payload: AcoustidResponse, status?: number): Error {
+  const message = payload.error?.message ?? (status ? `HTTP ${status}` : 'AcoustID вернул ошибку')
+  if (payload.error?.code === 4 || /invalid api key/i.test(message)) return new AcoustidKeyError()
+  return new Error(`AcoustID: ${message}`)
+}
+
 export class Fingerprinter {
   constructor(private readonly fpcalc: string) {}
 
@@ -94,9 +108,17 @@ export class Fingerprinter {
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
     })
-    if (!response.ok) throw new Error(`AcoustID ответил ${response.status}`)
-    const payload = (await response.json()) as AcoustidResponse
-    if (payload.status !== 'ok') throw new Error(payload.error?.message ?? 'AcoustID вернул ошибку')
+    // AcoustID reports API problems (a rejected key, a broken request) as HTTP
+    // 400 with a JSON body, so the body decides what the user is told.
+    const text = await response.text()
+    let payload: AcoustidResponse = {}
+    try {
+      payload = JSON.parse(text) as AcoustidResponse
+    } catch {
+      // Keep an empty payload for a non-JSON error page.
+    }
+    if (!response.ok) throw acoustidError(payload, response.status)
+    if (payload.status !== 'ok') throw acoustidError(payload)
 
     const recordings: AcoustidRecording[] = []
     const seen = new Set<string>()

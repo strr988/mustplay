@@ -129,6 +129,10 @@ export function ImportPanel({ active }: { active: boolean }) {
         if (!mounted.current || !job) return
         setActiveJob(job)
         setJobs(previous => previous.map(item => item.id === job.id ? summarize(job) : item))
+        if (job.status === 'failed' && job.message) {
+          setNotice(job.message)
+          setNoticeKind('error')
+        }
       }).catch(() => {})
     }, 1200)
     return () => clearInterval(timer)
