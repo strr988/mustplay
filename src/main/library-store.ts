@@ -105,6 +105,19 @@ const migrations = [
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
   ) STRICT;`,
   migrateAudioFormats,
+  `CREATE TABLE IF NOT EXISTS isrc_cache (
+    isrc TEXT PRIMARY KEY NOT NULL CHECK (length(isrc) = 12),
+    track_id TEXT,
+    file_path TEXT NOT NULL,
+    source TEXT NOT NULL,
+    verified_at TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS fingerprint_cache (
+    fingerprint TEXT PRIMARY KEY NOT NULL,
+    isrc TEXT NOT NULL CHECK (length(isrc) = 12),
+    verified_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS fingerprint_cache_isrc ON fingerprint_cache(isrc);`,
 ]
 
 function migrateAudioFormats(db: DatabaseSync): void {
@@ -531,6 +544,33 @@ export class LibraryStore implements ListeningDataReader {
 
   setSourceAvailability(id: string, available: boolean): void {
     this.db.prepare('UPDATE sources SET available = ? WHERE id = ?').run(Number(available), id)
+  }
+
+  getCachedFileByIsrc(isrc: string): string | null {
+    const row = this.db.prepare('SELECT file_path FROM isrc_cache WHERE isrc = ?').get(isrc) as { file_path: string } | undefined
+    return row?.file_path ?? null
+  }
+
+  recordIsrcFile(isrc: string, trackId: string | null, filePath: string, source: string): void {
+    this.transaction(() => {
+      this.db.prepare(`INSERT INTO isrc_cache (isrc, track_id, file_path, source, verified_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (isrc) DO UPDATE SET track_id = excluded.track_id, file_path = excluded.file_path,
+          source = excluded.source, verified_at = excluded.verified_at`).run(isrc, trackId ?? null, filePath, source, new Date().toISOString())
+    })
+  }
+
+  getCachedFingerprint(fingerprint: string): string | null {
+    const row = this.db.prepare('SELECT isrc FROM fingerprint_cache WHERE fingerprint = ?').get(fingerprint) as { isrc: string } | undefined
+    return row?.isrc ?? null
+  }
+
+  recordFingerprint(fingerprint: string, isrc: string): void {
+    this.transaction(() => {
+      this.db.prepare(`INSERT INTO fingerprint_cache (fingerprint, isrc, verified_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (fingerprint) DO UPDATE SET isrc = excluded.isrc, verified_at = excluded.verified_at`).run(fingerprint, isrc, new Date().toISOString())
+    })
   }
 
   saveScan(folder: string, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {

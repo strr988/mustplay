@@ -21,7 +21,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
-  const v8 = !app.isPackaged || app.getVersion() === '0.8.0'
+  const v9 = !app.isPackaged || app.getVersion() === '0.9.0'
+  const v8 = v9 || app.getVersion() === '0.8.0'
   const mustplay = v8 || app.getVersion() === '0.7.0'
   const rendererApi = mustplay ? 'window.mustplay' : 'window.musicPlayer'
   const origin = mustplay ? 'mustplay://app' : 'music-player://app'
@@ -123,7 +124,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         mustplay ? ['getInterfaceScale', 'setInterfaceScale', 'getSoundEffect', 'setSoundEffect', 'setTheme',
           'setReverb', 'getDiscoMode', 'setDiscoMode', 'publishDiscoBeat'] : [],
         v8 ? ['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
-          'onShowFullPlayer', 'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'] : []).sort()
+          'onShowFullPlayer', 'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'] : [],
+        v9 ? ['getPipelineStatus', 'savePipelineSettings', 'choosePipelineFolder', 'installPipelineTools',
+          'connectPipelineSpotify', 'disconnectPipelineSpotify', 'exchangePipelineSpotifyCode',
+          'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
+          'openPipelineFolder'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,

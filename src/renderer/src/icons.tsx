@@ -16,6 +16,7 @@ const drawings = {
   moon: <path d="M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2Z" />,
   pin: <path d="M9 4h6l-1 6 4 4H6l4-4zm3 10v7" />,
   expand: <path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7" />,
+  import: <path d="M9 14l2-2 4 4M21 15v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5" />,
   collapse: <path d="m6 9 6 6 6-6" />,
   more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   mini: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h6v4h-6z" /></>,

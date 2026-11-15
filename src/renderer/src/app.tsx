@@ -15,11 +15,13 @@ import { usePlayback } from './playback'
 import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
 import { ThemeToggle } from './theme-toggle'
+import { ImportPanel } from './import-panel'
 import { Wave } from './wave'
 import { WindowTitle } from './window-title'
 
 const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
+  { id: 'import', label: 'Импорт', icon: 'import' },
   { id: 'wave', label: 'Моя волна', icon: 'wave' },
   { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
   { id: 'lyrics', label: 'Текст песни', icon: 'lyrics' },
@@ -386,6 +388,9 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
                   setPlaylistRequest(request => ({ trackId: id, sequence: (request?.sequence ?? 0) + 1 }))
                   openSection('playlists')
                 }} />
+            </div>
+            <div hidden={section !== 'import'}>
+              <ImportPanel />
             </div>
             <div hidden={section !== 'wave'}>
               <Wave mode={waveMode} saving={savingWaveMode} changeMode={mode => void changeWaveMode(mode)}

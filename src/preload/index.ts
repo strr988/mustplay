@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
 import type { IpcRendererEvent } from 'electron'
 import type { MiniPlayerApi, MustplayApi } from '../shared/contracts'
+import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineStatus, PipelineTools } from '../shared/pipeline'
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
   const listener = (_event: IpcRendererEvent, value: T) => callback(value)
@@ -60,6 +61,18 @@ const api: MustplayApi = {
   getShortcuts: () => ipcRenderer.invoke(channels.getShortcuts),
   setShortcut: (action, accelerator) => ipcRenderer.invoke(channels.setShortcut, action, accelerator),
   setShortcutCapture: (capturing) => ipcRenderer.invoke(channels.setShortcutCapture, capturing),
+  getPipelineStatus: () => ipcRenderer.invoke(channels.getPipelineStatus),
+  savePipelineSettings: (settings) => ipcRenderer.invoke(channels.savePipelineSettings, settings),
+  choosePipelineFolder: () => ipcRenderer.invoke(channels.choosePipelineFolder),
+  installPipelineTools: () => ipcRenderer.invoke(channels.installPipelineTools),
+  connectPipelineSpotify: () => ipcRenderer.invoke(channels.connectPipelineSpotify),
+  disconnectPipelineSpotify: () => ipcRenderer.invoke(channels.disconnectPipelineSpotify),
+  exchangePipelineSpotifyCode: (code, state) => ipcRenderer.invoke(channels.exchangePipelineSpotifyCode, code, state),
+  startPipelineImport: (url) => ipcRenderer.invoke(channels.startPipelineImport, url),
+  getPipelineJob: (id) => ipcRenderer.invoke(channels.getPipelineJob, id),
+  cancelPipelineImport: () => ipcRenderer.invoke(channels.cancelPipelineImport),
+  listPipelineJobs: () => ipcRenderer.invoke(channels.listPipelineJobs),
+  openPipelineFolder: () => ipcRenderer.invoke(channels.openPipelineFolder),
 }
 
 const mini: MiniPlayerApi = {

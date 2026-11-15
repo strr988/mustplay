@@ -131,6 +131,8 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   webContents.focus()
   await focus('nav button[aria-label="Библиотека"]')
   key('Tab')
+  await waitFor('document.activeElement.getAttribute("aria-label") === "Импорт"', 'navigation is in the tab order')
+  key('Tab')
   await waitFor('document.activeElement.getAttribute("aria-label") === "Моя волна"', 'navigation is in the tab order')
   await waitFor('!document.querySelector(".play-button").disabled', 'keyboard play control is ready')
   await focus('footer .play-button')

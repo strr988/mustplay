@@ -1,4 +1,16 @@
 export const channels = {
+  getPipelineStatus: 'pipeline:status',
+  savePipelineSettings: 'pipeline:save-settings',
+  choosePipelineFolder: 'pipeline:choose-folder',
+  installPipelineTools: 'pipeline:install-tools',
+  connectPipelineSpotify: 'pipeline:spotify-connect',
+  disconnectPipelineSpotify: 'pipeline:spotify-disconnect',
+  exchangePipelineSpotifyCode: 'pipeline:spotify-exchange-code',
+  startPipelineImport: 'pipeline:start',
+  getPipelineJob: 'pipeline:job',
+  cancelPipelineImport: 'pipeline:cancel',
+  listPipelineJobs: 'pipeline:jobs',
+  openPipelineFolder: 'pipeline:open-folder',
   getWaveQueue: 'recommendations:get-wave-queue',
   getWaveRecommendations: 'recommendations:get-wave-recommendations',
   getWaveMode: 'recommendations:get-mode',
@@ -283,7 +295,21 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
+import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineSettingsPatch, PipelineStatus, PipelineTools } from './pipeline'
+
 export interface MustplayApi {
+  getPipelineStatus(): Promise<PipelineStatus>
+  savePipelineSettings(settings: PipelineSettingsPatch): Promise<PipelineSettings>
+  choosePipelineFolder(): Promise<PipelineSettings | null>
+  installPipelineTools(): Promise<PipelineTools>
+  connectPipelineSpotify(): Promise<{ url: string }>
+  disconnectPipelineSpotify(): Promise<void>
+  exchangePipelineSpotifyCode(code: string, state: string): Promise<boolean>
+  startPipelineImport(url: string): Promise<PipelineJob>
+  getPipelineJob(id: string): Promise<PipelineJob | null>
+  cancelPipelineImport(): Promise<void>
+  listPipelineJobs(): Promise<PipelineJobSummary[]>
+  openPipelineFolder(): Promise<void>
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>

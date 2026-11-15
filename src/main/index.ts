@@ -1,11 +1,15 @@
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { randomInt } from 'node:crypto'
-import { mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session, shell } from 'electron'
 import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
 import { builtInCursors, channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
 import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
+import type { PipelineSettings } from '../shared/pipeline'
+import { defaultSettings, PipelineService } from '../pipeline/service'
+import { ToolManager } from '../pipeline/tools'
+import { waitForSpotifyCallback } from '../pipeline/spotify-auth'
 import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
 import { readCursorPreset } from './cursor-presets'
@@ -36,6 +40,9 @@ let window: BrowserWindow | null = null
 let pendingImport: Promise<ImportResult> | undefined
 let importingCursor = false
 let pendingRescan: Promise<RescanResult> | undefined
+let pipelineService: PipelineService | null = null
+let pipelineSettings: PipelineSettings = { ...defaultSettings }
+let pipelineSettingsPath: string | null = null
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
   if (!window || event.sender !== window.webContents ||
@@ -309,6 +316,22 @@ async function start(): Promise<void> {
   const artwork = new Artwork(library)
   app.once('will-quit', () => library.close())
 
+  pipelineSettingsPath = join(userData, 'pipeline-settings.json')
+  try {
+    const raw = await readFile(pipelineSettingsPath, 'utf8')
+    const parsed = JSON.parse(raw) as Partial<PipelineSettings>
+    pipelineSettings = { ...defaultSettings, ...parsed }
+  } catch {
+    // First run: keep defaults.
+  }
+  // Access tokens live in memory only, so a previous session cannot stay "connected".
+  pipelineSettings.spotifyConnected = false
+  pipelineService = new PipelineService(
+    library.pipelineStore(),
+    new ToolManager(join(userData, 'tools')),
+  )
+  void pipelineService.toolsStatus().catch(() => {})
+
   const playerSession = session.fromPartition('mustplay')
   const canEnterFullscreen = (contents: WebContents | null, permission: string, details: {
     isMainFrame: boolean
@@ -362,6 +385,7 @@ async function start(): Promise<void> {
   })
 
   registerIpc(library)
+  registerPipelineIpc()
   const preferences: WebPreferences = {
     session: playerSession,
     preload: fileURLToPath(new URL('../preload/index.cjs', renderer)),
@@ -412,6 +436,114 @@ async function start(): Promise<void> {
   app.on('activate', () => {
     if (window) experience.focus()
     else void createWindow().catch(onStartupError)
+  })
+}
+
+async function savePipelineSettingsToDisk(): Promise<void> {
+  if (!pipelineSettingsPath) throw new Error('Pipeline settings path is not initialized')
+  await writeFile(pipelineSettingsPath, JSON.stringify(pipelineSettings, null, 2), 'utf8')
+}
+
+function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSettings {
+  const next = { ...pipelineSettings }
+  if (typeof patch.spotifyClientId === 'string') next.spotifyClientId = patch.spotifyClientId.trim().slice(0, 200)
+  if (typeof patch.acoustidKey === 'string') next.acoustidKey = patch.acoustidKey.trim().slice(0, 200)
+  if (typeof patch.workers === 'number' && Number.isFinite(patch.workers)) {
+    next.workers = Math.min(5, Math.max(1, Math.round(patch.workers)))
+  }
+  return next
+}
+
+function registerPipelineIpc(): void {
+  const service = pipelineService
+  if (!service) throw new Error('Pipeline service is not initialized')
+
+  ipcMain.handle(channels.getPipelineStatus, async (event) => {
+    senderWindow(event)
+    const tools = await service.toolsStatus()
+    return { settings: pipelineSettings, tools, job: service.currentJob() ?? null }
+  })
+
+  ipcMain.handle(channels.savePipelineSettings, async (event, patch: unknown) => {
+    senderWindow(event)
+    if (!patch || typeof patch !== 'object') throw new Error('Invalid pipeline settings')
+    pipelineSettings = normalizePipelineSettings(patch as Record<string, unknown>)
+    await savePipelineSettingsToDisk()
+    return pipelineSettings
+  })
+
+  ipcMain.handle(channels.choosePipelineFolder, async (event) => {
+    const owner = senderWindow(event)
+    const result = await dialog.showOpenDialog(owner, { title: 'Папка для загруженного аудио', properties: ['openDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return null
+    pipelineSettings.downloadDir = result.filePaths[0]
+    await savePipelineSettingsToDisk()
+    return pipelineSettings
+  })
+
+  ipcMain.handle(channels.installPipelineTools, async (event) => {
+    senderWindow(event)
+    return await service.installTools()
+  })
+
+  ipcMain.handle(channels.connectPipelineSpotify, async (event) => {
+    senderWindow(event)
+    const clientId = typeof pipelineSettings.spotifyClientId === 'string' ? pipelineSettings.spotifyClientId : ''
+    if (!clientId) throw new Error('Введите Client ID Spotify в настройках импорта')
+    const { url, state } = service.spotifyConnectUrl(clientId)
+    void waitForSpotifyCallback(state).then(async callback => {
+      if (!callback) return
+      const ok = await service.spotifyExchangeCode(clientId, callback.code, callback.state)
+      pipelineSettings.spotifyConnected = ok
+      await savePipelineSettingsToDisk()
+    }).catch(() => {})
+    await shell.openExternal(url)
+    return { url }
+  })
+
+  ipcMain.handle(channels.exchangePipelineSpotifyCode, async (event, code: unknown, state: unknown) => {
+    senderWindow(event)
+    if (typeof code !== 'string' || typeof state !== 'string') throw new Error('Некорректный код Spotify')
+    const clientId = typeof pipelineSettings.spotifyClientId === 'string' ? pipelineSettings.spotifyClientId : ''
+    const ok = await service.spotifyExchangeCode(clientId, code, state)
+    pipelineSettings.spotifyConnected = ok
+    await savePipelineSettingsToDisk()
+    return ok
+  })
+
+  ipcMain.handle(channels.disconnectPipelineSpotify, async (event) => {
+    senderWindow(event)
+    service.spotifyDisconnect()
+    pipelineSettings.spotifyConnected = false
+    await savePipelineSettingsToDisk()
+  })
+
+  ipcMain.handle(channels.startPipelineImport, async (event, url: unknown) => {
+    senderWindow(event)
+    if (typeof url !== 'string' || !url.trim()) throw new Error('Укажите ссылку на плейлист')
+    const job = await service.startPipelineImport(url.trim(), pipelineSettings, pipelineSettings.workers)
+    return job
+  })
+
+  ipcMain.handle(channels.getPipelineJob, async (event, id: unknown) => {
+    senderWindow(event)
+    if (typeof id !== 'string') throw new Error('Некорректный ID задания')
+    return service.getPipelineJob(id)
+  })
+
+  ipcMain.handle(channels.cancelPipelineImport, async (event) => {
+    senderWindow(event)
+    await service.cancelPipelineImport()
+  })
+
+  ipcMain.handle(channels.listPipelineJobs, async (event) => {
+    senderWindow(event)
+    return service.listPipelineJobs()
+  })
+
+  ipcMain.handle(channels.openPipelineFolder, async (event) => {
+    senderWindow(event)
+    if (pipelineSettings.downloadDir) await shell.openPath(pipelineSettings.downloadDir)
   })
 }
 

@@ -100,6 +100,10 @@ export class Library implements ListeningDataReader {
     this.store.close()
   }
 
+  pipelineStore(): LibraryStore {
+    return this.store
+  }
+
   getListeningData() { return this.store.getListeningData() }
   setTrackPreference(trackId: string, liked: boolean) { return this.store.setTrackPreference(trackId, liked) }
   recordPlaybackEvent(event: PlaybackEventInput): void { this.store.recordPlaybackEvent(event) }
