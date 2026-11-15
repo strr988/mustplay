@@ -10,9 +10,20 @@ export const downloadTimeoutMs = 10 * 60 * 1000
 const networkFailurePattern =
   /(INVALID_SESSION_ID|SSL|CERTIFICATE|Connection reset|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timed out|getaddrinfo|Temporary failure in name resolution|urlopen error|HTTP Error 5\d\d|превышено время ожидания)/i
 
+/**
+ * SoundCloud now serves label tracks only through its own player and marks them
+ * "DRM protected". Nothing can be downloaded from those pages, so the message
+ * has to say that instead of showing a raw yt-dlp error.
+ */
+const drmFailurePattern = /DRM protected/i
+
 /** Keeps the original yt-dlp text and adds a hint the user can act on. */
 export function describeYtDlpFailure(error: unknown): unknown {
-  if (!(error instanceof Error) || !networkFailurePattern.test(error.message)) return error
+  if (!(error instanceof Error)) return error
+  if (drmFailurePattern.test(error.message)) {
+    return new Error('Трек защищён DRM в источнике: сервис не разрешает скачивание этой записи. Попробуйте другую версию или другой источник.')
+  }
+  if (!networkFailurePattern.test(error.message)) return error
   return new Error(`${error.message}. Похоже, YouTube недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
 }
 
@@ -109,6 +120,21 @@ export function playlistArguments(url: string, cookiesPath: string | null): stri
 
 interface PlaylistEntry extends FlatEntry {
   webpage_url?: string
+  album_artist?: string
+}
+
+/**
+ * SoundCloud sets expose each track as a bare URL without a title. The slug is
+ * the only readable name we get without asking SoundCloud one request per track.
+ */
+function titleFromUrl(url: string): string {
+  try {
+    const slug = new URL(url).pathname.split('/').filter(Boolean).pop() ?? ''
+    const words = decodeURIComponent(slug).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+    return words ? words.charAt(0).toUpperCase() + words.slice(1) : ''
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -128,12 +154,14 @@ export function parsePlaylistOutput(stdout: string): { name: string | null; trac
   if (!Array.isArray(payload.entries)) return null
   const tracks: PipelineTrackInput[] = []
   for (const raw of payload.entries as (PlaylistEntry | null)[]) {
-    if (!raw || typeof raw.title !== 'string' || !raw.title.trim()) continue
+    if (!raw) continue
     const webUrl = typeof raw.webpage_url === 'string' && /^https?:/i.test(raw.webpage_url)
       ? raw.webpage_url
       : typeof raw.url === 'string' && /^https?:/i.test(raw.url) ? raw.url : null
-    let title = raw.title.trim()
-    let artist = raw.uploader?.trim() || raw.channel?.trim() || null
+    let title = typeof raw.title === 'string' ? raw.title.trim() : ''
+    if (!title && webUrl) title = titleFromUrl(webUrl)
+    if (!webUrl || !title) continue
+    let artist = raw.uploader?.trim() || raw.channel?.trim() || raw.album_artist?.trim() || null
     if (!artist && title.includes(' - ')) {
       const [left, ...rest] = title.split(' - ')
       if (left.trim() && rest.join(' - ').trim()) {
@@ -168,6 +196,26 @@ export class YtDlp {
       if (signal?.aborted) throw error
       throw describeYtDlpFailure(error)
     }
+  }
+
+  /** Reads a public playlist page without a browser session. */
+  async playlist(
+    url: string,
+    cookiesPath: string | null = null,
+    signal?: AbortSignal,
+  ): Promise<{ name: string | null; tracks: PipelineTrackInput[] }> {
+    let stdout: string
+    try {
+      ({ stdout } = await runProcess(this.binary, playlistArguments(url, cookiesPath), {
+        timeoutMs: 3 * 60_000, signal,
+      }))
+    } catch (error) {
+      if (signal?.aborted) throw error
+      throw describeYtDlpFailure(error)
+    }
+    const parsed = parsePlaylistOutput(stdout)
+    if (!parsed) throw new Error('Не удалось разобрать список треков из ответа yt-dlp')
+    return parsed
   }
 
   async download(candidate: AudioCandidate, directory: string, signal?: AbortSignal, format: DownloadFormat = 'original'): Promise<string> {

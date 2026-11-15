@@ -128,6 +128,21 @@ describe('yt-dlp helpers', () => {
     expect(playlistArguments('https://soundcloud.com/x/sets/y', 'C:/cookies.txt')).toContain('--cookies')
   })
 
+  it('names SoundCloud set entries that only expose a URL', () => {
+    const playlist = parsePlaylistOutput(JSON.stringify({
+      title: 'In Return',
+      entries: [{
+        id: '166946939', _type: 'url_transparent',
+        url: 'https://soundcloud.com/odesza/always-this-late', album_artist: 'ODESZA',
+      }],
+    }))
+    expect(playlist?.name).toBe('In Return')
+    expect(playlist?.tracks[0]).toMatchObject({
+      title: 'Always this late', artist: 'ODESZA', providerId: '166946939',
+      sourceUrl: 'https://soundcloud.com/odesza/always-this-late',
+    })
+  })
+
   it('parses a Yandex Music playlist with the session endpoint', () => {
     expect(parseYandexPlaylistUrl('https://music.yandex.ru/users/artem/playlists/3')).toEqual({ owner: 'artem', kind: '3' })
     expect(parseYandexPlaylistUrl('https://music.yandex.ru/playlists/3')).toBeNull()
@@ -523,5 +538,12 @@ describe('diagnostics for a broken import', () => {
     expect((blocked as Error).message).toContain('YouTube недоступен из этой сети')
     const other = new Error('ERROR: Unsupported URL: https://example.com')
     expect(describeYtDlpFailure(other)).toBe(other)
+  })
+
+  it('explains DRM-protected SoundCloud tracks', () => {
+    const blocked = describeYtDlpFailure(new Error(
+      'ERROR: [soundcloud] 166946939: This video is DRM protected',
+    ))
+    expect((blocked as Error).message).toContain('защищён DRM')
   })
 })

@@ -525,8 +525,8 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
           </button>)}
         </div>
         <p className="muted">
-          Deezer и Spotify читаются по ссылке без входа. Остальные сервисы открываются внутри mustplay:
-          пароль вводится на их странице и приложению не передаётся.
+          Deezer, Spotify и публичные плейлисты SoundCloud читаются по ссылке без входа. Остальные сервисы
+          открываются внутри mustplay: пароль вводится на их странице и приложению не передаётся.
         </p>
       </div>
     </section>

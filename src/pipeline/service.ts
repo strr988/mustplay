@@ -160,7 +160,9 @@ export class PipelineService {
     if (ref.provider === 'ytmusic') {
       throw new Error('YT Music импортируется через веб-сессию: нажмите «Открыть YT Music» и войдите в свой аккаунт')
     }
-    if (stubProviders.has(ref.provider)) {
+    // SoundCloud playlists are public pages yt-dlp can read without a login,
+    // which also works when the SoundCloud site itself is blocked.
+    if (stubProviders.has(ref.provider) && ref.provider !== 'soundcloud') {
       if ((webSourceProviders as readonly string[]).includes(ref.provider)) {
         const label = pipelineProviderLabels[ref.provider]
         throw new Error(`${label} импортируется через веб-сессию: нажмите «${label}» в блоке сервисов и войдите в свой аккаунт`)
@@ -178,6 +180,16 @@ export class PipelineService {
         // The embed page needs no account, but caps at 100 tracks and has no ISRC.
         playlist = await this.spotifyEmbed.fetchPlaylist(ref.id)
         sourceNote = playlist.note ?? 'Публичная страница Spotify'
+      }
+    } else if (ref.provider === 'soundcloud') {
+      const ytdlp = this.ytdlp()
+      if (!ytdlp) throw new Error('yt-dlp не установлен')
+      const parsed = await ytdlp.playlist(ref.url)
+      if (!parsed.tracks.length) throw new Error('В плейлисте не нашлось треков')
+      playlist = {
+        name: parsed.name ?? 'Плейлист SoundCloud',
+        tracks: parsed.tracks,
+        note: `Публичная страница SoundCloud: ${parsed.tracks.length} треков. Записи с DRM пропускаются.`,
       }
     } else {
       throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} не поддерживается`)
