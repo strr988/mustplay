@@ -129,6 +129,18 @@ describe('candidate matching', () => {
   it('rejects a weak pool', () => {
     expect(pickCandidate(track, [candidates[1]!])).toBeNull()
   })
+
+  it('prefers an upload whose length fits over a better matching title', () => {
+    const reference: PipelineTrackInput = {
+      title: 'Early Morning Waltz', artist: 'Benjamin Moussay Trio', album: null,
+      durationSeconds: 282, isrc: 'USA370556856', providerId: 'deezer:1',
+    }
+    const pool: AudioCandidate[] = [
+      { id: 'edit', url: 'https://edit', title: 'Benjamin Moussay Trio   Early Morning Waltz Moussay', channel: 'Benjamin Moussay Trio', durationSeconds: 181 },
+      { id: 'full', url: 'https://full', title: 'Early Morning Waltz', channel: null, durationSeconds: 283 },
+    ]
+    expect(pickCandidate(reference, pool)?.id).toBe('full')
+  })
 })
 
 describe('fingerprint verdicts', () => {

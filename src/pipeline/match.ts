@@ -57,10 +57,28 @@ export function candidateScore(track: PipelineTrackInput, candidate: AudioCandid
 
 export const candidateThreshold = 0.34
 
+/**
+ * How far a candidate's length may drift from the reference before it is
+ * treated as a different recording. YouTube is full of edits, live takes and
+ * short uploads that still carry the right title.
+ */
+export function durationTolerance(durationSeconds: number | null | undefined): number | null {
+  if (durationSeconds === null || durationSeconds === undefined || !Number.isFinite(durationSeconds)) return null
+  return Math.max(20, durationSeconds * 0.15)
+}
+
 export function pickCandidate(track: PipelineTrackInput, candidates: readonly AudioCandidate[]): AudioCandidate | null {
+  const tolerance = durationTolerance(track.durationSeconds)
+  // Prefer uploads whose length fits the reference when the length is known.
+  // Text alone lets a well-named three-minute edit beat the real track.
+  const fitting = tolerance === null || track.durationSeconds === null
+    ? candidates
+    : candidates.filter(candidate => candidate.durationSeconds === null ||
+      Math.abs(candidate.durationSeconds - track.durationSeconds!) <= tolerance)
+  const pool = fitting.length ? fitting : candidates
   let best: AudioCandidate | null = null
   let bestScore = 0
-  for (const candidate of candidates) {
+  for (const candidate of pool) {
     const score = candidateScore(track, candidate)
     if (score > bestScore) {
       bestScore = score
