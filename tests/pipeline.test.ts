@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { parseDeezerPlaylist, parseDeezerSearch } from '../src/metadata/providers/deezer'
+import { parseDeezerPlaylist, parseDeezerSearch, pickDeezerTrack } from '../src/metadata/providers/deezer'
+import { parseSpotifyEmbed } from '../src/metadata/providers/spotify-embed'
+import { rankMusicBrainzCandidates } from '../src/metadata/musicbrainz'
+import {
+  buildYtMusicContinuationRequest, mergeYtMusicTracks, parseYtMusicConfig, parseYtMusicContinuation,
+  parseYtMusicItem, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
+} from '../src/metadata/providers/ytmusic'
 import { parseSpotifyPage } from '../src/metadata/providers/spotify'
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
 import { buildSearchQuery, downloadArguments, parseDownloadedPath, parseSearchOutput } from '../src/audio/ytdlp'
@@ -151,6 +157,156 @@ describe('fingerprint verdicts', () => {
   })
 })
 
+describe('metadata resolution for sources without ISRC', () => {
+  it('reads the public Spotify embed page without an account', () => {
+    const payload = {
+      props: {
+        pageProps: {
+          state: {
+            data: {
+              entity: {
+                type: 'playlist',
+                name: 'Mix',
+                trackList: [
+                  { uri: 'spotify:track:abc', title: 'Midnight City', subtitle: 'M83', duration: 244_000, entityType: 'track' },
+                  { uri: 'spotify:episode:x', title: 'Episode', subtitle: 'Podcast', duration: 1_000, entityType: 'episode' },
+                  { uri: 'spotify:track:def', title: 'No Duration', subtitle: '' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    }
+    const playlist = parseSpotifyEmbed(
+      `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(payload)}</script></html>`,
+    )
+    expect(playlist).not.toBeNull()
+    expect(playlist!.name).toBe('Mix')
+    expect(playlist!.tracks).toHaveLength(2)
+    expect(playlist!.tracks[0]).toMatchObject({
+      title: 'Midnight City', artist: 'M83', durationSeconds: 244, isrc: null, providerId: 'abc',
+    })
+    expect(playlist!.tracks[1]).toMatchObject({ title: 'No Duration', durationSeconds: null, providerId: 'def' })
+    expect(parseSpotifyEmbed('<html>no data</html>')).toBeNull()
+  })
+
+  it('picks the Deezer row that carries a matching ISRC', () => {
+    const picked = pickDeezerTrack(
+      { title: 'Midnight City', artist: 'M83', durationSeconds: 244 },
+      [
+        { id: 1, title: 'Midnight City (Remix)', duration: 300, isrc: 'FRU661100999', artist: { name: 'M83' } },
+        { id: 2, title: 'Midnight City', duration: 244, isrc: 'FRU661100171', artist: { name: 'M83' } },
+        { id: 3, title: 'Midnight City', duration: 244, artist: { name: 'M83' } },
+      ],
+    )
+    expect(picked).toMatchObject({ isrc: 'FRU661100171', providerId: '2' })
+    expect(pickDeezerTrack({ title: 'Other', artist: 'Nobody', durationSeconds: 100 }, [
+      { id: 4, title: 'Midnight City', duration: 244, isrc: 'FRU661100171', artist: { name: 'M83' } },
+    ])).toBeNull()
+  })
+
+  it('ranks MusicBrainz candidates by title, artist and duration', () => {
+    const ranked = rankMusicBrainzCandidates(
+      { title: 'Midnight City', artist: 'M83', durationSeconds: 244 },
+      {
+        recordings: [
+          { id: 'wrong', title: 'Midnight City', length: 300_000, 'artist-credit': [{ name: 'Other Band' }] },
+          { id: 'right', title: 'Midnight City', length: 244_000, 'artist-credit': [{ name: 'M83' }] },
+        ],
+      },
+    )
+    expect(ranked.map(recording => recording.id)).toEqual(['right', 'wrong'])
+  })
+})
+
+describe('YT Music playlist parsing', () => {
+  const item = {
+    musicResponsiveListItemRenderer: {
+      playlistItemData: { videoId: 'abc12345678' },
+      flexColumns: [
+        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: 'Midnight City' }] } } },
+        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: 'M83' }, { text: ' • ' }, { text: 'Hurry Up' }] } } },
+      ],
+      fixedColumns: [
+        { musicResponsiveListItemFixedColumnRenderer: { text: { runs: [{ text: '4:04' }] } } },
+      ],
+    },
+  }
+
+  it('maps a YT Music row to a direct audio source', () => {
+    expect(parseYtMusicItem(item)).toMatchObject({
+      title: 'Midnight City', artist: 'M83', durationSeconds: 244, isrc: null,
+      providerId: 'abc12345678', sourceUrl: 'https://www.youtube.com/watch?v=abc12345678',
+    })
+    expect(parseYtMusicItem({ musicResponsiveListItemRenderer: { flexColumns: [] } })).toBeNull()
+  })
+
+  it('reads the shelf, the playlist name and the continuation token', () => {
+    const page = parseYtMusicPlaylist({
+      header: { musicDetailHeaderRenderer: { title: { runs: [{ text: 'My Mix' }] } } },
+      contents: {
+        sectionListRenderer: {
+          contents: [{
+            musicPlaylistShelfRenderer: {
+              contents: [
+                item,
+                { continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token: 'TOKEN' } } } },
+              ],
+            },
+          }],
+        },
+      },
+    })
+    expect(page).toMatchObject({ name: 'My Mix', continuation: 'TOKEN' })
+    expect(page.tracks).toHaveLength(1)
+  })
+
+  it('reads continuation pages and drops duplicate videos', () => {
+    const next = parseYtMusicContinuation({
+      continuationContents: {
+        musicPlaylistShelfContinuation: {
+          contents: [item, {
+            musicResponsiveListItemRenderer: {
+              playlistItemData: { videoId: 'def12345678' },
+              flexColumns: [{ musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: 'Another' }] } } }],
+            },
+          }],
+          continuations: [{ nextContinuationData: { continuation: 'NEXT' } }],
+        },
+      },
+    })
+    expect(next.continuation).toBe('NEXT')
+    expect(next.tracks).toHaveLength(2)
+    const first = parseYtMusicItem(item)!
+    expect(mergeYtMusicTracks([first], next.tracks).map(track => track.providerId))
+      .toEqual(['abc12345678', 'def12345678'])
+  })
+
+  it('reads the page config and builds the continuation request', () => {
+    const html = [
+      '<script>ytcfg.set({"INNERTUBE_API_KEY":"KEY","INNERTUBE_CLIENT_VERSION":"1.2",',
+      '"INNERTUBE_CONTEXT":{"client":{"clientName":"WEB_REMIX","clientVersion":"1.2"}}});</script>',
+      '<script>var ytInitialData = {"contents":{}};</script>',
+    ].join('')
+    const page = parseYtMusicPage(html)
+    expect(page.initialData).toEqual({ contents: {} })
+    expect(parseYtMusicConfig(html)).toMatchObject({ apiKey: 'KEY', clientVersion: '1.2' })
+    const request = buildYtMusicContinuationRequest(page.config, 'TOKEN')
+    expect(request.url).toContain('key=KEY')
+    expect(JSON.parse(request.body)).toMatchObject({
+      context: { client: { clientName: 'WEB_REMIX' } }, continuation: 'TOKEN',
+    })
+  })
+
+  it('accepts playlist links only', () => {
+    expect(parseYtMusicPlaylistId('https://music.youtube.com/playlist?list=PLabc123456')).toBe('PLabc123456')
+    expect(parseYtMusicPlaylistId('https://music.youtube.com/watch?v=abc&list=PLabc123456')).toBe('PLabc123456')
+    expect(parseYtMusicPlaylistId('https://music.youtube.com/')).toBeNull()
+    expect(parseYtMusicPlaylistId('https://example.com/playlist?list=PLabc123456')).toBeNull()
+  })
+})
+
 describe('track pipeline dry run', () => {
   it('verifies a matching download and remembers it', async () => {
     const remembered: string[] = []
@@ -193,5 +349,30 @@ describe('track pipeline dry run', () => {
     })
     expect(outcome.status).toBe('rejected')
     expect(discarded).toEqual(['C:/music/track.webm'])
+  })
+
+  it('downloads a direct source without searching and adds a reference ISRC', async () => {
+    const downloaded: string[] = []
+    const outcome = await runTrack({
+      title: 'Midnight City', artist: 'M83', album: null, durationSeconds: 244,
+      isrc: null, providerId: 'yt123', sourceUrl: 'https://www.youtube.com/watch?v=yt123',
+    }, {
+      cachedFile: async () => null,
+      resolveIsrc: async () => null,
+      resolveTrack: async input => ({ ...input, isrc: 'FRU661100171' }),
+      search: async () => { throw new Error('search must not run for a direct source') },
+      download: async candidate => { downloaded.push(candidate.url); return 'C:/music/direct.webm' },
+      fingerprint: async () => ({ durationSeconds: 244, fingerprint: 'FP' }),
+      lookupAcoustid: async () => [{
+        recordingId: 'r', title: 'Midnight City', artist: 'M83', durationSeconds: 244,
+        isrcs: ['FRU661100171'], score: 0.9,
+      }],
+      remember: async () => {},
+      discard: async () => {},
+      update: () => {},
+      isCancelled: () => false,
+    })
+    expect(downloaded).toEqual(['https://www.youtube.com/watch?v=yt123'])
+    expect(outcome).toMatchObject({ status: 'verified', method: 'isrc', filePath: 'C:/music/direct.webm' })
   })
 })

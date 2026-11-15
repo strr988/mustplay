@@ -11,6 +11,12 @@ export const channels = {
   cancelPipelineImport: 'pipeline:cancel',
   listPipelineJobs: 'pipeline:jobs',
   openPipelineFolder: 'pipeline:open-folder',
+  openWebSource: 'pipeline:web-source-open',
+  getWebSourceState: 'pipeline:web-source-state',
+  setWebSourceBounds: 'pipeline:web-source-bounds',
+  closeWebSource: 'pipeline:web-source-close',
+  importWebSourcePlaylist: 'pipeline:web-source-import',
+  clearWebSourceData: 'pipeline:web-source-clear',
   getWaveQueue: 'recommendations:get-wave-queue',
   getWaveRecommendations: 'recommendations:get-wave-recommendations',
   getWaveMode: 'recommendations:get-mode',
@@ -295,7 +301,7 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
-import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineSettingsPatch, PipelineStatus, PipelineTools } from './pipeline'
+import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineSettingsPatch, PipelineStatus, PipelineTools, WebSourceBounds, WebSourceProvider, WebSourceState } from './pipeline'
 
 export interface MustplayApi {
   getPipelineStatus(): Promise<PipelineStatus>
@@ -310,6 +316,12 @@ export interface MustplayApi {
   cancelPipelineImport(): Promise<void>
   listPipelineJobs(): Promise<PipelineJobSummary[]>
   openPipelineFolder(): Promise<void>
+  openWebSource(provider: WebSourceProvider): Promise<WebSourceState>
+  getWebSourceState(): Promise<WebSourceState>
+  setWebSourceBounds(bounds: WebSourceBounds): Promise<void>
+  closeWebSource(): Promise<void>
+  importWebSourcePlaylist(): Promise<PipelineJob>
+  clearWebSourceData(): Promise<void>
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>

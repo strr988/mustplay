@@ -1,16 +1,17 @@
 import type {
   AcoustidRecording, AudioCandidate, PipelineItemStatus, PipelineJob, PipelineJobStatus,
   PipelineMethod, PipelineProvider, PipelineSettings, PipelineStatus,
-  PipelineTools, PipelineTrackInput, ProviderPlaylist,
+  PipelineTools, PipelineTrackInput, ProviderPlaylist, WebSourceProvider,
 } from '../shared/pipeline'
-import { pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate } from '../shared/pipeline'
+import { pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate, webSourceProviders } from '../shared/pipeline'
 import { LibraryStore } from '../main/library-store'
 import { runTracks } from './orchestrator'
-import type { TrackDeps, TrackOutcome } from './orchestrator'
+import type { TrackDeps } from './orchestrator'
 import { DeferredFingerprinter } from './fingerprint'
 import type { AcoustidInput } from './fingerprint'
 import { YtDlp } from '../audio/ytdlp'
 import { DeezerProvider } from '../metadata/providers/deezer'
+import { SpotifyEmbedProvider } from '../metadata/providers/spotify-embed'
 import { SpotifyProvider, spotifyAuthorizationUrl, createCodeVerifier } from '../metadata/providers/spotify'
 import { MusicBrainzLookup } from '../metadata/musicbrainz'
 import { parsePlaylistUrl, stubProviders } from '../metadata/providers/types'
@@ -43,6 +44,7 @@ export class PipelineService {
 
   private readonly deezer: DeezerProvider
   private readonly spotify: SpotifyProvider
+  private readonly spotifyEmbed: SpotifyEmbedProvider
   private readonly musicbrainz: MusicBrainzLookup
   private readonly fingerprints: DeferredFingerprinter
 
@@ -59,6 +61,7 @@ export class PipelineService {
     this.spotifyLimit = new RateLimiter(msPerRequest(pipelineSpotifyRate.perSeconds, pipelineSpotifyRate.requests))
     this.deezer = new DeezerProvider(this.deezerLimit, fetch)
     this.spotify = new SpotifyProvider(async () => this.spotifyToken ?? '', this.spotifyLimit, fetch)
+    this.spotifyEmbed = new SpotifyEmbedProvider(fetch)
     this.musicbrainz = new MusicBrainzLookup(this.musicbrainzLimit, fetch)
     this.fingerprints = new DeferredFingerprinter(() => this.tools.binary('fpcalc'))
   }
@@ -84,42 +87,89 @@ export class PipelineService {
     return crypto.randomUUID()
   }
 
-  async startPipelineImport(url: string, settings: PipelineSettings, workers: number): Promise<PipelineJob> {
+  /** Validates everything that must be in place before any playlist is fetched. */
+  private async readySettings(
+    settings: PipelineSettings,
+  ): Promise<{ downloadDir: string; acoustidKey: string }> {
     if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
-    const ref = parsePlaylistUrl(url)
-    if (!ref) throw new Error('Неизвестная ссылка плейлиста')
     const downloadDir = settings.downloadDir
     if (!downloadDir) throw new Error('Укажите папку для скачивания в настройках импорта')
-    const acoustidClient = settings.acoustidKey
-    if (!acoustidClient) throw new Error('Укажите ключ AcoustID в настройках импорта')
+    const acoustidKey = settings.acoustidKey
+    if (!acoustidKey) throw new Error('Укажите ключ AcoustID в настройках импорта')
     const tools = await this.tools.status()
     if (!tools.ytDlp.installed) throw new Error(tools.ytDlp.hint)
     if (!tools.fpcalc.installed) throw new Error(tools.fpcalc.hint)
+    return { downloadDir, acoustidKey }
+  }
+
+  async startPipelineImport(url: string, settings: PipelineSettings, workers: number): Promise<PipelineJob> {
+    const ref = parsePlaylistUrl(url)
+    if (!ref) throw new Error('Неизвестная ссылка плейлиста')
 
     let playlist: ProviderPlaylist
+    let sourceNote: string | null = null
+    if (ref.provider === 'ytmusic') {
+      throw new Error('YT Music импортируется через веб-сессию: нажмите «Открыть YT Music» и войдите в свой аккаунт')
+    }
     if (stubProviders.has(ref.provider)) {
       throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} ещё не реализована`)
     }
+    const ready = await this.readySettings(settings)
     if (ref.provider === 'deezer') {
       playlist = await this.deezer.fetchPlaylist(ref.id)
     } else if (ref.provider === 'spotify') {
-      if (!this.spotifyToken) throw new Error('Подключите Spotify в настройках импорта')
-      playlist = await this.spotify.fetchPlaylist(ref.id)
+      if (this.spotifyToken) {
+        playlist = await this.spotify.fetchPlaylist(ref.id)
+        sourceNote = 'Spotify Web API'
+      } else {
+        // The embed page needs no account, but caps at 100 tracks and has no ISRC.
+        playlist = await this.spotifyEmbed.fetchPlaylist(ref.id)
+        sourceNote = playlist.note ?? 'Публичная страница Spotify'
+      }
     } else {
       throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} не поддерживается`)
     }
-    if (!playlist.tracks.length) throw new Error('В плейлисте нет треков')
+    return this.startJob(ref.provider, ref.url, playlist, sourceNote, ready, workers)
+  }
 
+  /** Starts an import from a track list read inside the user's own web session. */
+  async startWebSourceImport(
+    input: { provider: WebSourceProvider; url: string; playlist: ProviderPlaylist },
+    settings: PipelineSettings,
+    workers: number,
+  ): Promise<PipelineJob> {
+    if (!(webSourceProviders as readonly string[]).includes(input.provider)) {
+      throw new Error('Неизвестный веб-источник')
+    }
+    if (!input.playlist.tracks.length) throw new Error('В плейлисте нет треков')
+    const ready = await this.readySettings(settings)
+    return this.startJob(
+      input.provider, input.url, input.playlist,
+      input.playlist.note ?? 'Список прочитан из вашей веб-сессии', ready, workers,
+    )
+  }
+
+  private startJob(
+    provider: PipelineProvider,
+    playlistUrl: string,
+    playlist: ProviderPlaylist,
+    sourceNote: string | null,
+    settings: { downloadDir: string; acoustidKey: string },
+    workers: number,
+  ): PipelineJob {
+    if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
+    if (!playlist.tracks.length) throw new Error('В плейлисте нет треков')
     const job: PipelineJob = {
       id: this.newJobId(),
-      provider: ref.provider,
-      playlistUrl: ref.url,
+      provider,
+      playlistUrl,
       playlistName: playlist.name,
       status: 'running',
       total: playlist.tracks.length,
       createdAt: new Date().toISOString(),
       finishedAt: null,
       message: null,
+      sourceNote: sourceNote ?? playlist.note ?? null,
       items: playlist.tracks.map((track, index) => ({
         id: crypto.randomUUID(),
         position: index,
@@ -132,7 +182,7 @@ export class PipelineService {
         method: 'none' as PipelineMethod,
         confidence: null,
         filePath: null,
-        message: 'В очереди',
+        message: track.sourceUrl ? 'Прямая ссылка на запись' : 'В очереди',
         updatedAt: new Date().toISOString(),
       })),
     }
@@ -140,14 +190,14 @@ export class PipelineService {
     this.currentJobId = job.id
     this.abortController = new AbortController()
 
-    void this.runJob(job, playlist.tracks, { ...settings, downloadDir, acoustidKey: acoustidClient }, workers)
+    void this.runJob(job, playlist.tracks, settings, workers)
     return job
   }
 
   private async runJob(
     job: PipelineJob,
     tracks: readonly PipelineTrackInput[],
-    settings: PipelineSettings & { downloadDir: string; acoustidKey: string },
+    settings: { downloadDir: string; acoustidKey: string },
     workers: number,
   ): Promise<void> {
     const signal = this.abortController?.signal
@@ -192,7 +242,7 @@ export class PipelineService {
     track: PipelineTrackInput,
     index: number,
     jobId: string,
-    settings: PipelineSettings & { downloadDir: string; acoustidKey: string },
+    settings: { downloadDir: string; acoustidKey: string },
     signal: AbortSignal | undefined,
   ): TrackDeps {
     const update = (status: PipelineItemStatus) => {
@@ -211,6 +261,20 @@ export class PipelineService {
         const fromDeezer = await retry(() => this.deezer.resolveIsrc(isrc), 2, 600)
         if (fromDeezer) return fromDeezer
         return await retry(() => this.musicbrainz.resolveIsrc(isrc), 2, 600)
+      } catch {
+        return null
+      }
+    }
+
+    const resolveTrack = async (t: PipelineTrackInput): Promise<PipelineTrackInput | null> => {
+      try {
+        const fromDeezer = await retry(() => this.deezer.searchTrack(t), 2, 600)
+        if (fromDeezer?.isrc) return fromDeezer
+      } catch {
+        // MusicBrainz stays the fallback when Deezer is unavailable.
+      }
+      try {
+        return await retry(() => this.musicbrainz.searchTrack(t), 2, 600)
       } catch {
         return null
       }
@@ -259,7 +323,7 @@ export class PipelineService {
       await unlink(filePath).catch(() => {})
     }
 
-    return { cachedFile, resolveIsrc, search, download, fingerprint, lookupAcoustid, remember, discard, update, isCancelled }
+    return { cachedFile, resolveIsrc, resolveTrack, search, download, fingerprint, lookupAcoustid, remember, discard, update, isCancelled }
   }
 
   async cancelPipelineImport(): Promise<void> {

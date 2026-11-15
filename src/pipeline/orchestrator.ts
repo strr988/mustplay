@@ -21,6 +21,8 @@ export interface TrackDeps {
   cachedFile(isrc: string): Promise<string | null>
   /** Canonical metadata lookup by ISRC (Deezer / MusicBrainz). */
   resolveIsrc(isrc: string): Promise<PipelineTrackInput | null>
+  /** Reference ISRC lookup by artist/title for sources that do not ship one. */
+  resolveTrack?(track: PipelineTrackInput): Promise<PipelineTrackInput | null>
   search(track: PipelineTrackInput): Promise<AudioCandidate[]>
   download(candidate: AudioCandidate): Promise<string>
   fingerprint(path: string): Promise<Fingerprint>
@@ -37,6 +39,27 @@ function message(error: unknown): string {
 
 export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Promise<TrackOutcome> {
   let track: PipelineTrackInput = { ...input, isrc: isrcOf(input) }
+  if (deps.isCancelled()) return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен' }
+
+  // Sources such as Spotify's public page and YT Music do not expose an ISRC.
+  // Resolve one by artist/title so the strongest check is still available.
+  if (!track.isrc && deps.resolveTrack) {
+    try {
+      const resolved = await deps.resolveTrack(track)
+      if (resolved) {
+        track = {
+          ...track,
+          isrc: isrcOf({ ...track, isrc: resolved.isrc ?? track.isrc }),
+          title: track.title || resolved.title,
+          artist: track.artist ?? resolved.artist,
+          album: track.album ?? resolved.album,
+          durationSeconds: track.durationSeconds ?? resolved.durationSeconds,
+        }
+      }
+    } catch {
+      // A failing catalogue lookup must not stop the audio search.
+    }
+  }
   if (deps.isCancelled()) return { status: 'skipped', method: 'none', confidence: null, filePath: null, message: 'Импорт остановлен' }
 
   if (track.isrc) {
@@ -62,13 +85,24 @@ export async function runTrack(input: PipelineTrackInput, deps: TrackDeps): Prom
 
   deps.update('searching')
   let candidate: AudioCandidate | null
-  try {
-    candidate = pickCandidate(track, await deps.search(track))
-  } catch (error) {
-    return { status: 'failed', method: 'none', confidence: null, filePath: null, message: `Поиск не удался: ${message(error)}` }
-  }
-  if (!candidate) {
-    return { status: 'rejected', method: 'none', confidence: null, filePath: null, message: 'Подходящий аудиокандидат не найден' }
+  if (track.sourceUrl) {
+    // The source already points at the exact recording, so skip the yt-dlp search.
+    candidate = {
+      id: track.providerId ?? track.sourceUrl,
+      url: track.sourceUrl,
+      title: track.title,
+      channel: track.artist,
+      durationSeconds: track.durationSeconds,
+    }
+  } else {
+    try {
+      candidate = pickCandidate(track, await deps.search(track))
+    } catch (error) {
+      return { status: 'failed', method: 'none', confidence: null, filePath: null, message: `Поиск не удался: ${message(error)}` }
+    }
+    if (!candidate) {
+      return { status: 'rejected', method: 'none', confidence: null, filePath: null, message: 'Подходящий аудиокандидат не найден' }
+    }
   }
 
   deps.update('downloading')

@@ -6,10 +6,12 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, sessio
 import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
 import { builtInCursors, channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
 import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
-import type { PipelineSettings } from '../shared/pipeline'
+import { webSourceProviders } from '../shared/pipeline'
+import type { PipelineSettings, WebSourceBounds, WebSourceProvider } from '../shared/pipeline'
 import { defaultSettings, PipelineService } from '../pipeline/service'
 import { ToolManager } from '../pipeline/tools'
 import { waitForSpotifyCallback } from '../pipeline/spotify-auth'
+import { WebSourceManager } from './web-source'
 import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
 import { readCursorPreset } from './cursor-presets'
@@ -43,6 +45,7 @@ let pendingRescan: Promise<RescanResult> | undefined
 let pipelineService: PipelineService | null = null
 let pipelineSettings: PipelineSettings = { ...defaultSettings }
 let pipelineSettingsPath: string | null = null
+const webSources = new WebSourceManager()
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
   if (!window || event.sender !== window.webContents ||
@@ -396,6 +399,7 @@ async function start(): Promise<void> {
   const experience = registerPlayerExperience(library, () => window, senderWindow, entryUrl, preferences, appIcon)
   app.on('before-quit', experience.beginQuit)
   app.once('will-quit', experience.dispose)
+  app.once('will-quit', () => webSources.dispose())
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({
@@ -425,6 +429,7 @@ async function start(): Promise<void> {
     player.webContents.on('render-process-gone', experience.endShortcutCapture)
     player.on('closed', () => {
       experience.endShortcutCapture()
+      webSources.close()
       window = null
       experience.closeMini()
     })
@@ -544,6 +549,41 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.openPipelineFolder, async (event) => {
     senderWindow(event)
     if (pipelineSettings.downloadDir) await shell.openPath(pipelineSettings.downloadDir)
+  })
+
+  ipcMain.handle(channels.openWebSource, (event, provider: unknown) => {
+    const owner = senderWindow(event)
+    if (typeof provider !== 'string' || !(webSourceProviders as readonly string[]).includes(provider)) {
+      throw new Error('Неизвестный веб-источник')
+    }
+    return webSources.open(provider as WebSourceProvider, owner)
+  })
+
+  ipcMain.handle(channels.getWebSourceState, (event) => {
+    senderWindow(event)
+    return webSources.state()
+  })
+
+  ipcMain.handle(channels.setWebSourceBounds, (event, bounds: unknown) => {
+    senderWindow(event)
+    if (!bounds || typeof bounds !== 'object') throw new Error('Некорректные границы окна сервиса')
+    webSources.setBounds(bounds as WebSourceBounds)
+  })
+
+  ipcMain.handle(channels.closeWebSource, (event) => {
+    senderWindow(event)
+    webSources.close()
+  })
+
+  ipcMain.handle(channels.importWebSourcePlaylist, async (event) => {
+    senderWindow(event)
+    const source = await webSources.importPlaylist()
+    return await service.startWebSourceImport(source, pipelineSettings, pipelineSettings.workers)
+  })
+
+  ipcMain.handle(channels.clearWebSourceData, async (event) => {
+    senderWindow(event)
+    await webSources.clearData()
   })
 }
 

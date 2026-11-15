@@ -73,6 +73,12 @@ const api: MustplayApi = {
   cancelPipelineImport: () => ipcRenderer.invoke(channels.cancelPipelineImport),
   listPipelineJobs: () => ipcRenderer.invoke(channels.listPipelineJobs),
   openPipelineFolder: () => ipcRenderer.invoke(channels.openPipelineFolder),
+  openWebSource: provider => ipcRenderer.invoke(channels.openWebSource, provider),
+  getWebSourceState: () => ipcRenderer.invoke(channels.getWebSourceState),
+  setWebSourceBounds: bounds => ipcRenderer.invoke(channels.setWebSourceBounds, bounds),
+  closeWebSource: () => ipcRenderer.invoke(channels.closeWebSource),
+  importWebSourcePlaylist: () => ipcRenderer.invoke(channels.importWebSourcePlaylist),
+  clearWebSourceData: () => ipcRenderer.invoke(channels.clearWebSourceData),
 }
 
 const mini: MiniPlayerApi = {

@@ -51,4 +51,4 @@ function maybeDecode(value: string): string {
   }
 }
 
-export const stubProviders: ReadonlySet<PipelineProvider> = new Set(['apple', 'yandex', 'vk', 'soundcloud', 'ytmusic'])
+export const stubProviders: ReadonlySet<PipelineProvider> = new Set(['apple', 'yandex', 'vk', 'soundcloud'])

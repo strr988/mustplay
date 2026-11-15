@@ -1,4 +1,5 @@
 import type { PipelineProvider, PipelineTrackInput, ProviderPlaylist } from '../../shared/pipeline'
+import { similarity } from '../../pipeline/match'
 import { RateLimiter } from '../../pipeline/limiter'
 import { ProviderError } from './types'
 import type { MetadataProvider } from './types'
@@ -46,6 +47,37 @@ export function parseDeezerSearch(payload: unknown): PipelineTrackInput | null {
   return parseDeezerTrack(data[0])
 }
 
+/**
+ * Chooses the Deezer result that best matches a track from another service.
+ * Only rows that carry an ISRC are useful: the ISRC becomes the reference for
+ * the AcoustID check after download.
+ */
+export function pickDeezerTrack(
+  input: Pick<PipelineTrackInput, 'title' | 'artist' | 'durationSeconds'>,
+  rows: readonly DeezerTrack[],
+): PipelineTrackInput | null {
+  let best: PipelineTrackInput | null = null
+  let bestScore = 0
+  for (const row of rows) {
+    const track = trackInput(row)
+    if (!track?.isrc) continue
+    const title = similarity(input.title, track.title)
+    if (title < 0.45) continue
+    const artist = input.artist && track.artist ? similarity(input.artist, track.artist) : 0.7
+    let duration = 0.6
+    if (input.durationSeconds && track.durationSeconds) {
+      const difference = Math.abs(input.durationSeconds - track.durationSeconds)
+      duration = difference <= 8 ? 1 : difference <= 18 ? 0.5 : 0
+    }
+    const score = title * 0.6 + artist * 0.2 + duration * 0.2
+    if (score > bestScore) {
+      bestScore = score
+      best = track
+    }
+  }
+  return bestScore >= 0.6 ? best : null
+}
+
 export class DeezerProvider implements MetadataProvider {
   readonly id: PipelineProvider = 'deezer'
   readonly requiresAuth = false
@@ -88,6 +120,20 @@ export class DeezerProvider implements MetadataProvider {
     if (!/^[A-Z0-9]{12}$/.test(normalized)) return null
     const search = await this.json<unknown>(`https://api.deezer.com/search?q=isrc:${encodeURIComponent(`"${normalized}"`)}&limit=1`)
     return parseDeezerSearch(search)
+  }
+
+  /** Finds a reference ISRC for a track that came from a service without one. */
+  async searchTrack(
+    input: Pick<PipelineTrackInput, 'title' | 'artist' | 'durationSeconds'>,
+  ): Promise<PipelineTrackInput | null> {
+    const clean = (value: string) => value.replace(/["\\]/g, ' ').trim()
+    const terms: string[] = []
+    if (input.artist) terms.push(`artist:"${clean(input.artist)}"`)
+    terms.push(`track:"${clean(input.title)}"`)
+    const search = await this.json<{ data?: DeezerTrack[] }>(
+      `https://api.deezer.com/search?q=${encodeURIComponent(terms.join(' '))}&limit=8`,
+    )
+    return pickDeezerTrack(input, Array.isArray(search.data) ? search.data : [])
   }
 
   async fetchIsrc(trackId: string): Promise<string | null> {

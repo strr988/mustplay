@@ -390,7 +390,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
                 }} />
             </div>
             <div hidden={section !== 'import'}>
-              <ImportPanel />
+              <ImportPanel active={section === 'import'} />
             </div>
             <div hidden={section !== 'wave'}>
               <Wave mode={waveMode} saving={savingWaveMode} changeMode={mode => void changeWaveMode(mode)}

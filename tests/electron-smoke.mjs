@@ -128,7 +128,8 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         v9 ? ['getPipelineStatus', 'savePipelineSettings', 'choosePipelineFolder', 'installPipelineTools',
           'connectPipelineSpotify', 'disconnectPipelineSpotify', 'exchangePipelineSpotifyCode',
           'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
-          'openPipelineFolder'] : []).sort()
+          'openPipelineFolder', 'openWebSource', 'getWebSourceState', 'setWebSourceBounds',
+          'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,

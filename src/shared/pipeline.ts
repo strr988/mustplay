@@ -18,11 +18,15 @@ export interface PipelineTrackInput {
   durationSeconds: number | null
   isrc: string | null
   providerId: string | null
+  /** Exact audio URL when the source already knows the recording (YT Music). */
+  sourceUrl?: string | null
 }
 
 export interface ProviderPlaylist {
   name: string
   tracks: PipelineTrackInput[]
+  /** Human-readable caveat shown with the job, e.g. "public page returns 100 tracks". */
+  note?: string | null
 }
 
 export type PipelineItemStatus =
@@ -59,6 +63,8 @@ export interface PipelineJob {
   createdAt: string
   finishedAt: string | null
   message: string | null
+  /** How the track list was obtained, e.g. Spotify public page or YT Music session. */
+  sourceNote: string | null
   items: PipelineItem[]
 }
 
@@ -122,3 +128,22 @@ export const pipelineVerificationRate = { requests: 3, perSeconds: 1 } as const
 export const pipelineMetadataRate = { requests: 1, perSeconds: 1 } as const
 export const pipelineDeezerRate = { requests: 5, perSeconds: 1 } as const
 export const pipelineSpotifyRate = { requests: 5, perSeconds: 1 } as const
+
+/** Providers that read the track list from the user's own browser session. */
+export const webSourceProviders = ['ytmusic'] as const
+export type WebSourceProvider = typeof webSourceProviders[number]
+
+export interface WebSourceState {
+  open: boolean
+  provider: WebSourceProvider | null
+  url: string | null
+  title: string | null
+}
+
+/** Renderer viewport rectangle, in CSS pixels. */
+export interface WebSourceBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
