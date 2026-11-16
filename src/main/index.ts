@@ -25,6 +25,11 @@ import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
 
 const appIcon = fileURLToPath(new URL('./mustplay.ico', import.meta.url))
+/**
+ * The helper site is third-party, so the renderer never sends a URL: it asks for
+ * this one fixed page and Main opens it in the system browser.
+ */
+const yandexTokenHelpUrl = 'https://ym-token.marshal.dev/'
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 protocol.registerSchemesAsPrivileged([{
   scheme: playerScheme,
@@ -517,6 +522,11 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.installPipelineTools, async (event) => {
     senderWindow(event)
     return await service.installTools()
+  })
+
+  ipcMain.handle(channels.openYandexTokenHelp, async (event) => {
+    senderWindow(event)
+    await shell.openExternal(yandexTokenHelpUrl)
   })
 
   ipcMain.handle(channels.connectPipelineSpotify, async (event) => {

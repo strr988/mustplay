@@ -65,6 +65,7 @@ const api: MustplayApi = {
   savePipelineSettings: (settings) => ipcRenderer.invoke(channels.savePipelineSettings, settings),
   choosePipelineFolder: () => ipcRenderer.invoke(channels.choosePipelineFolder),
   installPipelineTools: () => ipcRenderer.invoke(channels.installPipelineTools),
+  openYandexTokenHelp: () => ipcRenderer.invoke(channels.openYandexTokenHelp),
   connectPipelineSpotify: () => ipcRenderer.invoke(channels.connectPipelineSpotify),
   disconnectPipelineSpotify: () => ipcRenderer.invoke(channels.disconnectPipelineSpotify),
   exchangePipelineSpotifyCode: (code, state) => ipcRenderer.invoke(channels.exchangePipelineSpotifyCode, code, state),

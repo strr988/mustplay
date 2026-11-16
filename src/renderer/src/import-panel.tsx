@@ -732,6 +732,14 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
             onChange={event => setYandexToken(event.currentTarget.value)}
             onBlur={() => { if (yandexToken.trim()) void saveYandexToken(yandexToken) }} />
         </label>
+        <p className="muted">
+          Где взять:{' '}
+          <button type="button" className="text-button" onClick={() => void window.mustplay.openYandexTokenHelp()}>
+            ym-token.marshal.dev
+          </button>{' '}
+          — сторонний сервис, он попросит вход в Яндекс-аккаунт. Если не доверяете посреднику, токен можно
+          достать самому: DevTools на music.yandex.ru → любой запрос к API → заголовок <code>Authorization</code>.
+        </p>
         {yandexSaved && <div className="settings-actions">
           <span className="import-badge is-ready">Токен сохранён</span>
           <button type="button" className="secondary" onClick={() => void forgetYandexToken()} disabled={busy}>Забыть токен</button>

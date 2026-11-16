@@ -130,6 +130,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         v8 ? ['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
           'onShowFullPlayer', 'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'] : [],
         v9 ? ['getPipelineStatus', 'savePipelineSettings', 'choosePipelineFolder', 'installPipelineTools',
+          'openYandexTokenHelp',
           'connectPipelineSpotify', 'disconnectPipelineSpotify', 'exchangePipelineSpotifyCode',
           'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
           'retryPipelineItem', 'skipPipelineItem',

@@ -3,6 +3,7 @@ export const channels = {
   savePipelineSettings: 'pipeline:save-settings',
   choosePipelineFolder: 'pipeline:choose-folder',
   installPipelineTools: 'pipeline:install-tools',
+  openYandexTokenHelp: 'pipeline:yandex-token-help',
   connectPipelineSpotify: 'pipeline:spotify-connect',
   disconnectPipelineSpotify: 'pipeline:spotify-disconnect',
   exchangePipelineSpotifyCode: 'pipeline:spotify-exchange-code',
@@ -310,6 +311,7 @@ export interface MustplayApi {
   savePipelineSettings(settings: PipelineSettingsPatch): Promise<PipelineSettings>
   choosePipelineFolder(): Promise<PipelineSettings | null>
   installPipelineTools(): Promise<PipelineTools>
+  openYandexTokenHelp(): Promise<void>
   connectPipelineSpotify(): Promise<{ url: string }>
   disconnectPipelineSpotify(): Promise<void>
   exchangePipelineSpotifyCode(code: string, state: string): Promise<boolean>
