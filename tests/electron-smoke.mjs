@@ -135,7 +135,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
           'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
           'retryPipelineItem', 'skipPipelineItem',
           'openPipelineFolder', 'openWebSource', 'getWebSourceState', 'setWebSourceBounds',
-          'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData'] : []).sort()
+          'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData',
+          'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
+          'chooseYandexFolder', 'openYandexTokenPage', 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'getYandexDownloads', 'onYandexDownloads'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -399,6 +402,43 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
 
   if (phase === 'interface') {
     await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows, importLabel, v8 })
+    return
+  }
+
+  if (phase === 'search-ui') {
+    const section = 'section[aria-label="Поиск и загрузка Яндекс Музыки"]'
+    await click('Поиск')
+    await waitFor('document.querySelector(\'button[aria-label="Поиск"]\').getAttribute("aria-current") === "page"', 'search nav active')
+    await waitFor(`!!document.querySelector('${section}') && !document.querySelector('${section}').closest("[hidden]")`, 'search section visible')
+    const ui = await run(`(() => ({
+      heading: document.querySelector('${section} h1')?.innerText,
+      settingsCard: !!document.querySelector('.yandex-settings'),
+      tokenInput: !!document.querySelector('input[aria-label="Токен Яндекс Музыки"]'),
+      tokenPageButton: [...document.querySelectorAll('.yandex-token button')].some(button => button.innerText.includes('Получить токен')),
+      quality: document.querySelector('select[aria-label="Качество загрузки"]')?.value,
+      lyrics: document.querySelector('select[aria-label="Формат текста песни"]')?.value,
+      embedCover: document.querySelector('input[aria-label="Встраивать обложку в файл"]')?.checked,
+      searchDisabled: document.querySelector('input[aria-label="Поиск треков в Яндекс Музыке"]')?.disabled,
+      idleTitle: document.querySelector('${section} .empty-state h2')?.innerText,
+      tokenNotice: [...document.querySelectorAll('.notice')].some(node => node.innerText.includes('токен')),
+      legal: [...document.querySelectorAll('.yandex-settings .muted')].some(node => node.innerText.includes('личного использования')),
+    }))()`)
+    assert.equal(ui.heading, 'Поиск')
+    assert.ok(ui.settingsCard && ui.tokenInput && ui.tokenPageButton, 'settings controls rendered')
+    assert.deepEqual({ quality: ui.quality, lyrics: ui.lyrics, embedCover: ui.embedCover, searchDisabled: ui.searchDisabled },
+      { quality: 'nq', lyrics: 'lrc', embedCover: true, searchDisabled: true })
+    assert.equal(ui.idleTitle, 'Найдите музыку')
+    assert.ok(ui.tokenNotice && ui.legal, 'token notice and legal disclaimer shown')
+    await choose('Качество загрузки', 'lossless')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.quality === "lossless")', 'quality persisted')
+    await waitFor('!document.querySelector(\'select[aria-label="Формат текста песни"]\').disabled', 'settings idle after quality')
+    await choose('Формат текста песни', 'text')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.lyrics === "text")', 'lyrics persisted')
+    await waitFor('!document.querySelector(\'input[aria-label="Встраивать обложку в файл"]\').disabled', 'settings idle after lyrics')
+    await run('document.querySelector(\'input[aria-label="Встраивать обложку в файл"]\').click()')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.embedCover === false)', 'cover setting persisted')
+    assert.deepEqual(await run('window.mustplay.getYandexSettings()'),
+      { hasToken: false, quality: 'lossless', lyrics: 'text', embedCover: false, folderLabel: null })
     return
   }
 
@@ -823,7 +863,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         window.mustplay.getSoundEffect(), window.mustplay.setSoundEffect('slowed'), window.mustplay.setReverb('slowed', true),
         window.mustplay.getDiscoMode(), window.mustplay.setDiscoMode(true), window.mustplay.publishDiscoBeat(1),
         ...(['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
-          'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
+          'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode',
+          'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
+          'chooseYandexFolder', 'openYandexTokenPage', 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'getYandexDownloads'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)
     for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)

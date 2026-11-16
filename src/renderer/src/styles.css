@@ -1097,6 +1097,24 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
 .import-web-title .muted { margin-top: 4px; overflow-wrap: anywhere; }
 .import-web-frame { flex: 1; min-height: 120px; border: 1px dashed var(--empty-border); border-radius: var(--radius); }
 .import-web-stage .notice { margin: 0; }
+.yandex-settings { margin-bottom: 12px; }
+.yandex-settings > summary { cursor: pointer; font-size: 14px; font-weight: 650; }
+.yandex-settings .settings-option input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--accent); }
+.yandex-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 12px; }
+.yandex-search .primary { min-height: 38px; }
+.yandex-token { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.yandex-token .settings-input { flex: 1; width: auto; min-width: 160px; }
+.yandex-progress { font-size: 12px; font-variant-numeric: tabular-nums; }
+.yandex-done { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.yandex-done .icon { width: 14px; height: 14px; }
+.yandex-error { max-width: 170px; font-size: 11px; line-height: 1.35; color: var(--danger); overflow-wrap: anywhere; }
+.yandex-downloads { margin-top: 16px; }
+.yandex-downloads ul { list-style: none; display: grid; gap: 10px; margin: 0; padding: 0; }
+.yandex-downloads li { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.yandex-download-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.yandex-download-text { display: grid; min-width: 0; }
+.yandex-progress-bar { width: 100%; height: 6px; accent-color: var(--accent); }
+.yandex-download-error { font-size: 12px; overflow-wrap: anywhere; }
 
 .mini-shell { position: relative; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--panel); }
 .mini-player { display: grid; align-content: start; gap: 18px; padding: 18px; overflow: auto; }

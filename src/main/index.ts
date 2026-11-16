@@ -21,16 +21,13 @@ import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
 import { registerPlayerExperience } from './player-experience'
+import { registerYandex } from './yandex-service'
+import { hasYandexToken, readYandexToken, writeYandexToken, yandexTokenHelpUrl } from './yandex-token'
 import { resolveLibraryPath, resolveProfileDirectory } from './library-profile'
 import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
 
 const appIcon = fileURLToPath(new URL('./mustplay.ico', import.meta.url))
-/**
- * The helper site is third-party, so the renderer never sends a URL: it asks for
- * this one fixed page and Main opens it in the system browser.
- */
-const yandexTokenHelpUrl = 'https://ym-token.marshal.dev/'
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 protocol.registerSchemesAsPrivileged([{
   scheme: playerScheme,
@@ -323,7 +320,9 @@ async function start(): Promise<void> {
   const library = new Library(resolveLibraryPath(userData))
   nativeTheme.themeSource = library.getTheme()
   const artwork = new Artwork(library)
+  const yandex = registerYandex(library, () => window, senderWindow)
   app.once('will-quit', () => library.close())
+  app.once('will-quit', yandex.dispose)
 
   pipelineSettingsPath = join(userData, 'pipeline-settings.json')
   try {
@@ -332,6 +331,13 @@ async function start(): Promise<void> {
     pipelineSettings = { ...defaultSettings, ...parsed }
   } catch {
     // First run: keep defaults.
+  }
+  // A pre-merge build kept the Yandex token in this JSON file in plain text.
+  // Move it into the encrypted profile store once, then clear it from disk.
+  if (pipelineSettings.yandexToken.trim()) {
+    if (!hasYandexToken(library)) writeYandexToken(library, pipelineSettings.yandexToken)
+    pipelineSettings.yandexToken = ''
+    await savePipelineSettingsToDisk()
   }
   // The first import should just work: the folder is created by the app and
   // nobody has to configure paths or tools beforehand.
@@ -396,12 +402,16 @@ async function start(): Promise<void> {
       const id = url.pathname.slice('/artwork/'.length)
       return idPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
     }
+    if (url.pathname.startsWith('/yandex-cover/')) {
+      const id = url.pathname.slice('/yandex-cover/'.length)
+      return /^\d{1,20}$/.test(id) ? yandex.coverProxy.serve(request, id) : new Response(null, { status: 404 })
+    }
     const asset = assets.get(url.pathname)
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })
   })
 
   registerIpc(library)
-  registerPipelineIpc()
+  registerPipelineIpc(library)
   const preferences: WebPreferences = {
     session: playerSession,
     preload: fileURLToPath(new URL('../preload/index.cjs', renderer)),
@@ -460,7 +470,9 @@ async function start(): Promise<void> {
 
 async function savePipelineSettingsToDisk(): Promise<void> {
   if (!pipelineSettingsPath) throw new Error('Pipeline settings path is not initialized')
-  await writeFile(pipelineSettingsPath, JSON.stringify(pipelineSettings, null, 2), 'utf8')
+  // The Yandex token is never written here: it lives in the encrypted profile store.
+  const persisted = { ...pipelineSettings, yandexToken: '' }
+  await writeFile(pipelineSettingsPath, JSON.stringify(persisted, null, 2), 'utf8')
 }
 
 /**
@@ -471,17 +483,10 @@ function publicPipelineSettings(): PipelineSettings {
   return { ...pipelineSettings, yandexToken: '' }
 }
 
-function hasYandexToken(): boolean {
-  return pipelineSettings.yandexToken.trim().length > 0
-}
-
 function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSettings {
-  const next = { ...pipelineSettings }
+  const next = { ...pipelineSettings, yandexToken: '' }
   if (typeof patch.spotifyClientId === 'string') next.spotifyClientId = patch.spotifyClientId.trim().slice(0, 200)
   if (typeof patch.acoustidKey === 'string') next.acoustidKey = patch.acoustidKey.trim().slice(0, 200)
-  // OAuth tokens are long but never contain whitespace; trimming also strips a
-  // pasted line break, which is the usual way a token breaks.
-  if (typeof patch.yandexToken === 'string') next.yandexToken = patch.yandexToken.trim().slice(0, 4000)
   if (typeof patch.workers === 'number' && Number.isFinite(patch.workers)) {
     next.workers = Math.min(5, Math.max(1, Math.round(patch.workers)))
   }
@@ -489,7 +494,12 @@ function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSett
   return next
 }
 
-function registerPipelineIpc(): void {
+/** Settings for an import run, with the token read fresh from the single store. */
+function pipelineRunSettings(library: Library): PipelineSettings {
+  return { ...pipelineSettings, yandexToken: readYandexToken(library) ?? '' }
+}
+
+function registerPipelineIpc(library: Library): void {
   const service = pipelineService
   if (!service) throw new Error('Pipeline service is not initialized')
 
@@ -498,7 +508,7 @@ function registerPipelineIpc(): void {
     const tools = await service.toolsStatus()
     return {
       settings: publicPipelineSettings(),
-      yandexTokenSaved: hasYandexToken(),
+      yandexTokenSaved: hasYandexToken(library),
       tools,
       job: service.currentJob() ?? null,
       version: buildVersion,
@@ -509,7 +519,13 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.savePipelineSettings, async (event, patch: unknown) => {
     senderWindow(event)
     if (!patch || typeof patch !== 'object') throw new Error('Invalid pipeline settings')
-    pipelineSettings = normalizePipelineSettings(patch as Record<string, unknown>)
+    const input = patch as Record<string, unknown>
+    // An empty string is the explicit "forget token" action; nothing else
+    // touches the encrypted store.
+    if (typeof input.yandexToken === 'string') {
+      writeYandexToken(library, input.yandexToken.slice(0, 4000))
+    }
+    pipelineSettings = normalizePipelineSettings(input)
     await savePipelineSettingsToDisk()
     return publicPipelineSettings()
   })
@@ -568,7 +584,7 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.startPipelineImport, async (event, url: unknown) => {
     senderWindow(event)
     if (typeof url !== 'string' || !url.trim()) throw new Error('Укажите ссылку на плейлист')
-    const job = await service.startPipelineImport(url.trim(), pipelineSettings, pipelineSettings.workers)
+    const job = await service.startPipelineImport(url.trim(), pipelineRunSettings(library), pipelineSettings.workers)
     return job
   })
 
@@ -591,7 +607,7 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.retryPipelineItem, async (event, jobId: unknown, itemId: unknown) => {
     senderWindow(event)
     if (typeof jobId !== 'string' || typeof itemId !== 'string') throw new Error('Некорректный трек для повтора')
-    return await service.retryPipelineItem(jobId, itemId, pipelineSettings, pipelineSettings.workers)
+    return await service.retryPipelineItem(jobId, itemId, pipelineRunSettings(library), pipelineSettings.workers)
   })
 
   ipcMain.handle(channels.skipPipelineItem, (event, jobId: unknown, itemId: unknown) => {
@@ -635,7 +651,7 @@ function registerPipelineIpc(): void {
     // before the user is told to open a playlist.
     await service.ensureTools()
     const source = await webSources.importPlaylist()
-    return await service.startWebSourceImport(source, pipelineSettings, pipelineSettings.workers)
+    return await service.startWebSourceImport(source, pipelineRunSettings(library), pipelineSettings.workers)
   })
 
   ipcMain.handle(channels.clearWebSourceData, async (event) => {

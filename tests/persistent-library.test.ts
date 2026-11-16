@@ -52,7 +52,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 14 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -206,14 +206,14 @@ it('turns a finished import into a playlist with source metadata and keeps its h
     total: 1,
     createdAt: new Date().toISOString(),
     finishedAt: new Date().toISOString(),
-    message: 'Завершено',
+    message: 'пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ',
     sourceNote: null,
     playlistId: null,
     items: [{
       id: 'item-1', position: 0, title: 'Midnight City', artist: 'M83',
       album: 'Hurry Up, We are Dreaming', genres: ['Pop'], durationSeconds: 244,
       isrc: 'FRU661100171', status: 'verified', method: 'isrc', confidence: 1,
-      filePath: file, message: 'Совпал код трека', candidateId: 'abc', cached: false,
+      filePath: file, message: 'пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ', candidateId: 'abc', cached: false,
       updatedAt: new Date().toISOString(),
     }],
   }

@@ -82,6 +82,18 @@ const api: MustplayApi = {
   closeWebSource: () => ipcRenderer.invoke(channels.closeWebSource),
   importWebSourcePlaylist: () => ipcRenderer.invoke(channels.importWebSourcePlaylist),
   clearWebSourceData: () => ipcRenderer.invoke(channels.clearWebSourceData),
+  getYandexSettings: () => ipcRenderer.invoke(channels.getYandexSettings),
+  setYandexToken: (token) => ipcRenderer.invoke(channels.setYandexToken, token),
+  setYandexQuality: (quality) => ipcRenderer.invoke(channels.setYandexQuality, quality),
+  setYandexLyrics: (format) => ipcRenderer.invoke(channels.setYandexLyrics, format),
+  setYandexEmbedCover: (enabled) => ipcRenderer.invoke(channels.setYandexEmbedCover, enabled),
+  chooseYandexFolder: () => ipcRenderer.invoke(channels.chooseYandexFolder),
+  openYandexTokenPage: () => ipcRenderer.invoke(channels.openYandexTokenPage),
+  yandexSearch: (text, page) => ipcRenderer.invoke(channels.yandexSearch, text, page),
+  yandexDownload: (trackId) => ipcRenderer.invoke(channels.yandexDownload, trackId),
+  yandexCancelDownload: (id) => ipcRenderer.invoke(channels.yandexCancelDownload, id),
+  getYandexDownloads: () => ipcRenderer.invoke(channels.getYandexDownloads),
+  onYandexDownloads: (callback) => subscribe(channels.yandexDownloads, callback),
 }
 
 const mini: MiniPlayerApi = {
