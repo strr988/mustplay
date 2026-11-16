@@ -87,8 +87,18 @@ export async function resolveShortLink(raw: string, options: ShortLinkOptions = 
     const location = reply.location
     if (location) {
       const target = validateTarget(new URL(location, current), source.hosts)
+      // Some shorteners bounce to a landing page on their own host and put the
+      // real address into the query string. Deezer does exactly that.
+      const embedded = embeddedTarget(target, source.hosts)
+      if (embedded) {
+        const settled = settledTarget(embedded)
+        if (settled) return settled
+        current = embedded
+        continue
+      }
       // The redirect already gave us the answer: do not load the service page.
-      if (detectImportLink(target.toString())) return target.toString()
+      const settled = settledTarget(target)
+      if (settled) return settled
       current = target
       continue
     }
@@ -102,7 +112,15 @@ export async function resolveShortLink(raw: string, options: ShortLinkOptions = 
     const refresh = refreshTarget(html, current)
     if (refresh) {
       const target = validateTarget(refresh, source.hosts)
-      if (detectImportLink(target.toString())) return target.toString()
+      const embedded = embeddedTarget(target, source.hosts)
+      if (embedded) {
+        const settled = settledTarget(embedded)
+        if (settled) return settled
+        current = embedded
+        continue
+      }
+      const settled = settledTarget(target)
+      if (settled) return settled
       current = target
       continue
     }
@@ -227,6 +245,54 @@ function validateTarget(url: URL, allowed: readonly string[]): URL {
     throw new ShortLinkError('blocked-host', `Неожиданный адрес: ${host}`)
   }
   return url
+}
+
+/**
+ * A full provider address, not another shortener hop. Returning the landing
+ * page would only move the failure into the playlist parser, where the message
+ * ("не удалось прочитать ссылку") says nothing about the real cause.
+ */
+function settledTarget(url: URL): string | null {
+  const info = detectImportLink(url.toString())
+  if (!info || info.short) return null
+  return url.toString()
+}
+
+/** Query names Deezer and friends use to carry the real address. */
+const embeddedTargetParams = ['awf', 'dest', 'gwf', 'iwf', 'url', 'u', 'target', 'to', 'link', 'redirect']
+
+/**
+ * Deezer answers a share link with `link.deezer.com/?awf=<target>&dest=<target>`,
+ * where the playlist address is URL-encoded in the query. The landing page it
+ * serves next never names the playlist, so the query is the only place the id
+ * exists without loading the app.
+ */
+function embeddedTarget(url: URL, allowed: readonly string[]): URL | null {
+  for (const name of embeddedTargetParams) {
+    const parsed = decodedTarget(url.searchParams.get(name), allowed)
+    if (parsed) return parsed
+  }
+  // Unknown wrappers: accept any parameter that already looks like a real link.
+  for (const value of url.searchParams.values()) {
+    const parsed = decodedTarget(value, allowed)
+    if (parsed) return parsed
+  }
+  return null
+}
+
+function decodedTarget(raw: string | null, allowed: readonly string[]): URL | null {
+  if (!raw || raw.length > 2_048 || !/^https:\/\//i.test(raw)) return null
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return null
+  }
+  const host = normalizeHost(parsed.hostname)
+  if (!allowed.some(domain => hostMatches(host, domain))) return null
+  const info = detectImportLink(parsed.toString())
+  if (!info || info.short) return null
+  return parsed
 }
 
 function refreshTarget(html: string, base: URL): URL | null {

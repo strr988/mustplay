@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { detectImportLink } from '../src/shared/import-links'
+import { parsePlaylistUrl } from '../src/metadata/providers/types'
 import {
   fetchTransport, resolveShortLink, ShortLinkError, shortLinkFailureMessage, shortLinkSource,
 } from '../src/imports/short-links'
@@ -91,6 +92,36 @@ describe('short link resolver', () => {
     })
     expect(calls.map(call => call.method)).toEqual(['HEAD', 'GET'])
     expect(resolved).toBe('https://www.deezer.com/playlist/1234567')
+  })
+
+  it('reads the playlist Deezer hides in its landing-page query', async () => {
+    const target = 'https://www.deezer.com/playlist/2097558104?host=0&utm_source=user_sharing'
+    const landing = 'https://link.deezer.com/?awf=' + encodeURIComponent(target) +
+      '&dest=' + encodeURIComponent(target) + '&gwf=' + encodeURIComponent(target)
+    const calls: Call[] = []
+    const resolved = await resolveShortLink('https://link.deezer.com/s/34YK04CocEvMouinnrk0F', {
+      transport: scriptedTransport({
+        'https://link.deezer.com/s/34YK04CocEvMouinnrk0F': { status: 301, location: landing },
+      }, calls),
+    })
+    expect(resolved).toBe(target)
+    expect(parsePlaylistUrl(resolved)).toMatchObject({ provider: 'deezer', id: '2097558104' })
+    // One request: the landing page is never loaded.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.method).toBe('HEAD')
+  })
+
+  it('ignores an embedded address that is not https or not the provider', async () => {
+    const error = await resolveShortLink('https://link.deezer.com/s/abc', {
+      transport: scriptedTransport({
+        'https://link.deezer.com/s/abc': {
+          status: 301,
+          location: 'https://link.deezer.com/?awf=' + encodeURIComponent('http://www.deezer.com/playlist/1'),
+        },
+      }),
+    }).catch(value => value)
+    expect(error).toBeInstanceOf(ShortLinkError)
+    expect((error as ShortLinkError).kind).toBe('blocked')
   })
 
   it('reads a meta refresh when the shortener answers 200', async () => {

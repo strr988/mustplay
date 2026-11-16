@@ -294,7 +294,8 @@ export class PipelineService {
     settings: { downloadDir: string; acoustidKey: string; format: PipelineDownloadFormat },
     workers: number,
   ): Promise<void> {
-    const signal = this.abortController?.signal
+    const controller = this.abortController
+    const signal = controller?.signal
     let verified = 0
     let failed = 0
     let processed = 0
@@ -327,7 +328,8 @@ export class PipelineService {
       this.persist(job)
       return
     } finally {
-      this.abortController = null
+      // A newer job may already own the field; only the owner clears it.
+      if (this.abortController === controller) this.abortController = null
     }
 
     job.finishedAt = new Date().toISOString()
@@ -433,7 +435,7 @@ export class PipelineService {
         // A rejected key is permanent, so it must not be retried.
         return await retry(lookup, 2, 1000, error => !(error instanceof AcoustidKeyError))
       } catch (error) {
-        if (error instanceof AcoustidKeyError && !this.abortReason) {
+        if (error instanceof AcoustidKeyError && !this.abortReason && this.currentJobId === jobId) {
           // Every remaining track would fail the same way: stop the whole import.
           this.abortReason = error.message
           this.abortController?.abort()

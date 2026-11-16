@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { parseDeezerPlaylist, parseDeezerSearch, pickDeezerTrack } from '../src/metadata/providers/deezer'
 import { parseSpotifyEmbed } from '../src/metadata/providers/spotify-embed'
 import { rankMusicBrainzCandidates } from '../src/metadata/musicbrainz'
@@ -10,7 +13,7 @@ import { parseSpotifyPage } from '../src/metadata/providers/spotify'
 import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } from '../src/metadata/providers/yandex'
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
 import {
-  audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, forceIpv4Arguments,
+  audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, findDownloadedFile, forceIpv4Arguments,
   parseDownloadedPath, parsePlaylistOutput, parseSearchOutput, playlistArguments, playlistFromFailure,
 } from '../src/audio/ytdlp'
 import { ProcessError } from '../src/audio/process'
@@ -118,6 +121,35 @@ describe('yt-dlp helpers', () => {
     expect(retried).toContain('--force-ipv4')
     expect(retried.filter(value => value === '--force-ipv4')).toHaveLength(1)
     expect(forceIpv4Arguments(retried)).toEqual(retried)
+  })
+
+  it('finds a downloaded file whose printed name lost its emoji', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mustplay-ytdlp-'))
+    try {
+      const real = join(dir, 'ℂ𝕠𝕠𝕝 𝕍𝕚𝕓𝕣𝕒𝕥𝕚𝕠𝕟 𝕄𝕦𝕤𝕚𝕔 🎶 - Post Malone - Cooped up⧸ Return [0BHClh39jjs].m4a')
+      await writeFile(real, 'audio')
+      expect(await findDownloadedFile(dir, '0BHClh39jjs')).toBe(real)
+      expect(await findDownloadedFile(dir, 'dQw4w9WgXcQ')).toBeNull()
+      expect(await findDownloadedFile(dir, '../0BHClh39jjs')).toBeNull()
+      expect(await findDownloadedFile(join(dir, 'missing'), '0BHClh39jjs')).toBeNull()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('prefers the newest file when an earlier attempt left another extension', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mustplay-ytdlp-'))
+    try {
+      const older = join(dir, 'Artist - Song [dQw4w9WgXcQ].webm')
+      const newer = join(dir, 'Artist - Song [dQw4w9WgXcQ].m4a')
+      await writeFile(older, 'audio')
+      await writeFile(newer, 'audio')
+      const past = new Date(Date.now() - 60_000)
+      await utimes(older, past, past)
+      expect(await findDownloadedFile(dir, 'dQw4w9WgXcQ')).toBe(newer)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('reads a flat playlist from another service', () => {

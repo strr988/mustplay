@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import type { AudioCandidate, PipelineTrackInput } from '../shared/pipeline'
 import type { ProcessResult } from './process'
@@ -174,6 +174,41 @@ export function parseDownloadedPath(stdout: string): string | null {
     if (line.startsWith('/') && extname(line)) return line
   }
   return null
+}
+
+/**
+ * Finds the file a download really produced, using the `[<id>]` suffix the
+ * output template always appends.
+ *
+ * yt-dlp prints the destination path, but a name with emoji or stylised
+ * Unicode letters does not survive the print: the line comes back as
+ * "    - Post Malone - ...", while the file on disk keeps its real name. The
+ * download itself succeeded, so the path is read from the directory instead
+ * of being trusted from stdout. The same lookup covers `--no-overwrites`,
+ * where a repeated attempt prints nothing at all.
+ */
+export async function findDownloadedFile(directory: string, id: string): Promise<string | null> {
+  if (!id || /[/\\]/.test(id)) return null
+  let names: string[]
+  try {
+    names = await readdir(directory)
+  } catch {
+    return null
+  }
+  const marker = `[${id}]`
+  let newest: { path: string; mtimeMs: number } | null = null
+  for (const name of names) {
+    if (!name.includes(marker) || !extname(name)) continue
+    const path = join(directory, name)
+    try {
+      const info = await stat(path)
+      if (!info.isFile()) continue
+      if (!newest || info.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: info.mtimeMs }
+    } catch {
+      // A file removed between listing and stat is simply not the answer.
+    }
+  }
+  return newest?.path ?? null
 }
 
 export interface PlaylistOptions {
@@ -402,8 +437,19 @@ export class YtDlp {
       throw describeYtDlpFailure(error, candidate.url)
     }
     const path = parseDownloadedPath(stdout)
-    if (!path) throw new Error('yt-dlp не сообщил путь к файлу')
-    return path
+    if (path) {
+      try {
+        if ((await stat(path)).isFile()) return path
+      } catch {
+        // The printed name may be mangled by the console code page; the real
+        // file is still in the directory, named by the template.
+      }
+    }
+    const located = await findDownloadedFile(directory, candidate.id)
+    if (located) return located
+    throw new Error(path
+      ? `yt-dlp скачал файл, но его не удалось найти: ${path}`
+      : 'yt-dlp не сообщил путь к файлу')
   }
 
   async version(): Promise<string> {
