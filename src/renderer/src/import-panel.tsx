@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
-  PipelineItem, PipelineItemStatus, PipelineJob, PipelineJobSummary,
+  PipelineItem, PipelineItemStatus, PipelineJob, PipelineJobSummary, PipelineProvider,
   PipelineSettings, PipelineStatus, WebSourceProvider, WebSourceState,
 } from '../../shared/pipeline'
-import { pipelineProviderLabels, webSourceProviders } from '../../shared/pipeline'
+import { pipelineProviderLabels } from '../../shared/pipeline'
+import { importActionLabel, linkNote, linkSummary, readLink } from './import-links'
 
 const emptySettings: PipelineSettings = {
   spotifyClientId: '',
@@ -43,6 +44,26 @@ const providerHints: Record<WebSourceProvider, string> = {
   yandex: 'Яндекс Музыка',
   vk: 'ВК Музыка',
   soundcloud: 'SoundCloud',
+}
+
+const webTileHints: Record<WebSourceProvider, string> = {
+  ytmusic: 'нужен вход в Google',
+  yandex: 'нужен OAuth-токен',
+  vk: 'скоро',
+  soundcloud: 'закрытые подборки',
+}
+
+/** Sources whose web session can finish an import today. */
+const workingWebSources: readonly WebSourceProvider[] = ['ytmusic', 'soundcloud']
+
+const providerMarks: Record<PipelineProvider, string> = {
+  deezer: 'D',
+  spotify: 'S',
+  apple: 'A',
+  yandex: 'Я',
+  vk: 'VK',
+  soundcloud: 'SC',
+  ytmusic: 'YT',
 }
 
 const activeStatuses: PipelineItemStatus[] = ['searching', 'downloading', 'verifying']
@@ -126,8 +147,12 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
   const [retrying, setRetrying] = useState('')
   const [awaitingSpotify, setAwaitingSpotify] = useState(false)
   const [webSource, setWebSource] = useState<WebSourceState | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const stage = useRef<HTMLDivElement>(null)
+  const urlInput = useRef<HTMLInputElement>(null)
+  const tokenInput = useRef<HTMLInputElement>(null)
+  const settingsCard = useRef<HTMLDetailsElement>(null)
   const mounted = useRef(true)
   const notifiedDone = useRef<string | null>(null)
 
@@ -290,6 +315,30 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
     }
   }
 
+  /** Opens the settings and brings them into view. */
+  function openSettings() {
+    setSettingsOpen(true)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      settingsCard.current?.scrollIntoView({ block: 'start' })
+    }))
+  }
+
+  /** Opens the settings and puts the cursor into the token field. */
+  function focusYandexToken() {
+    setSettingsOpen(true)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      tokenInput.current?.scrollIntoView({ block: 'center' })
+      tokenInput.current?.focus()
+    }))
+  }
+
+  function clearUrl() {
+    setUrl('')
+    setNotice('')
+    setNoticeKind(null)
+    urlInput.current?.focus()
+  }
+
   async function saveField<K extends keyof PipelineSettings>(key: K, value: PipelineSettings[K]) {
     const saved = await window.mustplay.savePipelineSettings({ [key]: value } as Partial<PipelineSettings>)
     setStatus(previous => (previous ? { ...previous, settings: saved } : previous))
@@ -357,7 +406,17 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
   }
 
   async function startImport() {
-    if (!url.trim()) { setNotice('Вставьте ссылку на плейлист.'); setNoticeKind('error'); return }
+    if (!link) {
+      setNotice('Не узнали сервис по ссылке. Пример: https://soundcloud.com/artist/sets/name')
+      setNoticeKind('error')
+      urlInput.current?.focus()
+      return
+    }
+    if (!link.supported) {
+      setNotice(linkNote(link, yandexSaved))
+      setNoticeKind('error')
+      return
+    }
     setBusy(true)
     setNotice('Готовим инструменты и читаем плейлист…')
     setNoticeKind('ok')
@@ -481,11 +540,21 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
   const counts = useMemo(() => countItems(items), [items])
   const settings = status?.settings ?? emptySettings
   const tools = status?.tools ?? emptyTools
+  const link = useMemo(() => readLink(url), [url])
   const percent = activeJob && activeJob.total > 0 ? Math.min(100, Math.round((counts.done / activeJob.total) * 100)) : 0
   const running = activeJob?.status === 'running'
   const current = counts.active[0] ?? null
   const toolsReady = tools.ytDlp.installed && tools.fpcalc.installed
+  const toolsHint = !tools.ytDlp.installed ? tools.ytDlp.hint : !tools.fpcalc.installed ? tools.fpcalc.hint : 'Готовы к работе'
   const webLabel = webSource?.provider ? providerHints[webSource.provider] : 'Сервис'
+  const linkBlocked = !link || !link.supported
+  const folderName = settings.downloadDir.split(/[\\/]/).filter(Boolean).pop() ?? 'папка не выбрана'
+  const settingsSummary = [
+    settings.format === 'm4a' ? 'm4a' : 'оригинал',
+    folderName,
+    toolsReady ? 'инструменты готовы' : 'инструменты не готовы',
+    yandexSaved ? 'Яндекс: токен ✓' : 'Яндекс: без токена',
+  ].join(' · ')
 
   if (webSource?.open) {
     return <div className="import-web-stage" ref={stage} aria-label={`Импорт из ${webLabel}`}>
@@ -522,45 +591,56 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
 
     {notice && <p className={`notice${noticeKind === 'error' ? ' notice-error' : ''}`} role="alert">{notice}</p>}
 
-    <section className="settings-card">
-      <label className="import-field">
-        <span>Ссылка на плейлист</span>
-        <input className="settings-input import-input" placeholder="Deezer, Spotify, Яндекс Музыка, ВК или SoundCloud"
+    <section className="settings-card import-link-card">
+      <label className="import-link-label" htmlFor="import-url">Ссылка на плейлист</label>
+      <div className={`import-url-field${link ? ' is-known' : ''}`}>
+        <span className="import-provider-mark" data-provider={link?.provider ?? 'unknown'} aria-hidden="true">
+          {link ? providerMarks[link.provider] : '↗'}
+        </span>
+        <input id="import-url" ref={urlInput} className="import-url-input import-input" autoComplete="off" spellCheck={false}
+          placeholder="https://soundcloud.com/artist/sets/name"
           value={url} onChange={event => setUrl(event.currentTarget.value)}
-          onKeyDown={event => { if (event.key === 'Enter' && !busy && !running) void startImport() }} />
-      </label>
-      <div className="settings-actions">
-        <button type="button" className="primary" onClick={startImport} disabled={busy || running}>
-          {running ? 'Импорт идёт…' : busy ? 'Готовим…' : noticeKind === 'error' ? 'Повторить' : 'Импортировать'}
+          onKeyDown={event => { if (event.key === 'Enter' && !busy && !running && !linkBlocked) void startImport() }} />
+        {url && <button type="button" className="import-clear" aria-label="Очистить ссылку" onClick={clearUrl}>×</button>}
+      </div>
+      <p className={`import-link-hint${url && !link ? ' is-error' : ''}`} role={url && !link ? 'alert' : undefined}>
+        {link
+          ? `${linkSummary(link)} · ${linkNote(link, yandexSaved)}`
+          : url
+            ? 'Не узнали сервис. Подойдёт ссылка на плейлист Deezer, Spotify или сет SoundCloud.'
+            : 'Вставьте ссылку — сервис определится сам. Enter начнёт импорт.'}
+      </p>
+      <div className="import-link-actions">
+        <div className="import-link-meta">
+          <span className="muted">Формат: {settings.format === 'm4a' ? 'm4a' : 'оригинал'}</span>
+          <button type="button" className="text-button" onClick={openSettings}>Настройки</button>
+          {link?.provider === 'yandex' && !yandexSaved &&
+            <button type="button" className="text-button" onClick={focusYandexToken}>Сохранить токен</button>}
+        </div>
+        <button type="button" className="primary" onClick={startImport} disabled={busy || running || linkBlocked}>
+          {running ? 'Импорт идёт…' : busy ? 'Готовим…' : importActionLabel(link)}
         </button>
       </div>
+    </section>
 
-      <div className="import-format" role="group" aria-label="Формат файлов">
-        <span className="muted">Формат файлов</span>
-        <label>
-          <input type="radio" name="import-format" checked={settings.format === 'm4a'}
-            onChange={() => void saveField('format', 'm4a')} disabled={busy} />
-          <span>m4a — играет на телефоне и в машине</span>
-        </label>
-        <label>
-          <input type="radio" name="import-format" checked={settings.format === 'original'}
-            onChange={() => void saveField('format', 'original')} disabled={busy} />
-          <span>Оригинал (webm/opus) — без перекодирования</span>
-        </label>
-      </div>
-
-      <div className="import-sources">
-        <span className="muted">Или откройте сервис и войдите в свой аккаунт:</span>
-        <div className="settings-actions">
-          {webSourceProviders.map(provider => <button key={provider} type="button" className="secondary"
-            onClick={() => void openWebSource(provider)} disabled={busy || running}>
-            {providerHints[provider]}
-          </button>)}
-        </div>
+    <section className="settings-card import-accounts">
+      <div className="import-accounts-head">
+        <h2>Или через аккаунт сервиса</h2>
         <p className="muted">
-          Deezer, Spotify и публичные плейлисты SoundCloud читаются по ссылке без входа. Остальные сервисы
-          открываются внутри mustplay: пароль вводится на их странице и приложению не передаётся.
+          Откроется настоящая страница сервиса внутри mustplay. Пароль вводится на его странице
+          и приложению не виден.
         </p>
+      </div>
+      <div className="import-tiles">
+        {workingWebSources.map(provider => <button key={provider} type="button" className="import-tile"
+          onClick={() => void openWebSource(provider)} disabled={busy || running}>
+          <span className="import-tile-mark" aria-hidden="true">{providerMarks[provider]}</span>
+          <span className="import-tile-text">
+            <strong>{providerHints[provider]}</strong>
+            <span className="muted">{webTileHints[provider]}</span>
+          </span>
+          <span className="import-tile-arrow" aria-hidden="true">→</span>
+        </button>)}
       </div>
     </section>
 
@@ -677,98 +757,128 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       </div>
     </section>}
 
-    <details className="settings-card import-details">
-      <summary>Дополнительно</summary>
-      <p className="muted">
-        Инструменты импорта (yt-dlp и fpcalc) ставятся автоматически при первом импорте.
-        Ключ AcoustID нужен для сверки отпечатков — встроенного ключа приложения хватает,
-        но можно указать свой с acoustid.org.
-      </p>
-      <label className="import-field">
-        <span>Ключ AcoustID</span>
-        <input className="settings-input import-input" placeholder="необязательно" value={acoustidKey}
-          onChange={event => setAcoustidKey(event.currentTarget.value)}
-          onBlur={() => void saveField('acoustidKey', acoustidKey)} />
-      </label>
-      <div className="settings-option import-option">
-        <div>
-          <span>Папка для аудио</span>
-          <p className="muted import-path">{settings.downloadDir || 'появится при первом импорте'}</p>
-        </div>
-        <button type="button" className="secondary" onClick={chooseFolder} disabled={busy}>Выбрать папку</button>
-      </div>
-      <label className="settings-option import-option">
-        <span>Параллельных загрузок</span>
-        <input type="number" className="settings-input" min={1} max={5} value={String(settings.workers)}
-          onChange={event => void saveField('workers', Math.min(5, Math.max(1, Number(event.currentTarget.value) || 1)))} />
-      </label>
-      <div className="import-tools">
-        <div>
-          <strong>yt-dlp</strong>
-          <p className={tools.ytDlp.installed ? 'muted' : 'danger'}>{tools.ytDlp.installed ? 'установлен' : tools.ytDlp.hint}</p>
-        </div>
-        <div>
-          <strong>fpcalc (Chromaprint)</strong>
-          <p className={tools.fpcalc.installed ? 'muted' : 'danger'}>{tools.fpcalc.installed ? 'установлен' : tools.fpcalc.hint}</p>
-        </div>
-        <button type="button" className="secondary" onClick={installTools} disabled={busy}>
-          {toolsReady ? 'Проверить снова' : 'Установить инструменты'}
-        </button>
-      </div>
+    <details ref={settingsCard} className="settings-card import-settings" open={settingsOpen}
+      onToggle={event => setSettingsOpen(event.currentTarget.open)}>
+      <summary className="import-settings-head">
+        <span>Настройки импорта</span>
+        <span className="import-settings-summary">{settingsSummary}</span>
+      </summary>
 
-      <details className="import-details-nested">
-        <summary>
-          <span>Яндекс Музыка <span className="muted">— OAuth-токен аккаунта</span></span>
-        </summary>
-        <p className="muted">
-          Токен нужен, чтобы читать плейлисты и получать прямые ссылки на аудио через api.music.yandex.net.
-          Приложение хранит его только в своём профиле и отправляет только Яндексу.
-        </p>
-        <label className="import-field">
-          <span>Токен Яндекс Музыки</span>
-          <input type="password" autoComplete="off" spellCheck={false} className="settings-input import-input"
-            placeholder={yandexSaved ? 'токен сохранён — вставьте новый, чтобы заменить' : 'OAuth-токен'}
-            value={yandexToken}
-            onChange={event => setYandexToken(event.currentTarget.value)}
-            onBlur={() => { if (yandexToken.trim()) void saveYandexToken(yandexToken) }} />
-        </label>
-        <p className="muted">
-          Где взять:{' '}
-          <button type="button" className="text-button" onClick={() => void window.mustplay.openYandexTokenHelp()}>
-            ym-token.marshal.dev
-          </button>{' '}
-          — сторонний сервис, он попросит вход в Яндекс-аккаунт. Если не доверяете посреднику, токен можно
-          достать самому: DevTools на music.yandex.ru → любой запрос к API → заголовок <code>Authorization</code>.
-        </p>
-        {yandexSaved && <div className="settings-actions">
-          <span className="import-badge is-ready">Токен сохранён</span>
-          <button type="button" className="secondary" onClick={() => void forgetYandexToken()} disabled={busy}>Забыть токен</button>
-        </div>}
-      </details>
+      <div className="import-settings-body">
+        <section className="import-settings-group" aria-labelledby="import-tools-title">
+          <h3 id="import-tools-title">Инструменты</h3>
+          <div className="import-settings-row">
+            <div className="import-tool-state">
+              <span className="import-chip" data-ready={tools.ytDlp.installed || undefined}>yt-dlp</span>
+              <span className="import-chip" data-ready={tools.fpcalc.installed || undefined}>fpcalc</span>
+              <span className={toolsReady ? 'muted' : 'danger import-tool-hint'}>{toolsHint}</span>
+            </div>
+            <button type="button" className="secondary" onClick={installTools} disabled={busy}>
+              {toolsReady ? 'Проверить снова' : 'Установить'}
+            </button>
+          </div>
+        </section>
 
-      <details className="import-details-nested">
-        <summary>
-          <span>Spotify Web API <span className="muted">— необязательно, для Premium-аккаунтов</span></span>
-        </summary>
-        <p className="muted">
-          Без подключения Spotify читается публичная страница плейлиста. Client ID нужен только для Web API:
-          Redirect URI <code>http://127.0.0.1:8888/callback</code>, аккаунт добавлен в User Management.
-        </p>
-        <label className="import-field">
-          <span>Client ID Spotify</span>
-          <input className="settings-input import-input" placeholder="из developer.spotify.com" value={clientId}
-            onChange={event => setClientId(event.currentTarget.value)}
-            onBlur={() => void saveField('spotifyClientId', clientId)} />
-        </label>
-        <div className="settings-actions">
-          {settings.spotifyConnected
-            ? <span className="import-badge is-ready">Аккаунт подключён</span>
-            : <button type="button" className="secondary" onClick={connectSpotify} disabled={busy || awaitingSpotify}>
-              {awaitingSpotify ? 'Ждём подтверждения…' : 'Подключить Spotify'}
-            </button>}
-          {settings.spotifyConnected && <button type="button" className="secondary" onClick={disconnectSpotify} disabled={busy}>Отключить</button>}
-        </div>
-      </details>
+        <section className="import-settings-group" aria-labelledby="import-files-title">
+          <h3 id="import-files-title">Файлы</h3>
+          <div className="import-settings-row">
+            <div>
+              <span>Формат</span>
+              <p className="muted">m4a играет везде, оригинал — без перекодирования.</p>
+            </div>
+            <div className="import-segmented" role="group" aria-label="Формат файлов">
+              <button type="button" aria-pressed={settings.format === 'm4a'}
+                onClick={() => void saveField('format', 'm4a')}>m4a</button>
+              <button type="button" aria-pressed={settings.format === 'original'}
+                onClick={() => void saveField('format', 'original')}>оригинал</button>
+            </div>
+          </div>
+          <div className="import-settings-row">
+            <div>
+              <span>Параллельные загрузки</span>
+              <p className="muted">Сколько треков качать одновременно, от 1 до 5.</p>
+            </div>
+            <select className="settings-input import-workers" aria-label="Параллельные загрузки"
+              value={settings.workers}
+              onChange={event => void saveField('workers', Math.min(5, Math.max(1, Number(event.currentTarget.value) || 1)))}>
+              {[1, 2, 3, 4, 5].map(count => <option key={count} value={count}>{count}</option>)}
+            </select>
+          </div>
+          <div className="import-settings-row">
+            <div>
+              <span>Папка для аудио</span>
+              <p className="muted import-path">{settings.downloadDir || 'появится при первом импорте'}</p>
+            </div>
+            <button type="button" className="secondary" onClick={chooseFolder} disabled={busy}>Выбрать папку</button>
+          </div>
+        </section>
+
+        <section className="import-settings-group" aria-labelledby="import-connections-title">
+          <h3 id="import-connections-title">Подключения</h3>
+          <div className="import-connection">
+            <div className="import-connection-head">
+              <span>Яндекс Музыка</span>
+              {yandexSaved
+                ? <span className="import-badge is-ready">Токен сохранён</span>
+                : <span className="import-badge">Нужен токен</span>}
+            </div>
+            <div className="import-connection-body">
+              <input ref={tokenInput} type="password" autoComplete="off" spellCheck={false}
+                aria-label="Токен Яндекс Музыки" className="settings-input import-input"
+                placeholder={yandexSaved ? 'токен сохранён — вставьте новый, чтобы заменить' : 'OAuth-токен'}
+                value={yandexToken}
+                onChange={event => setYandexToken(event.currentTarget.value)}
+                onBlur={() => { if (yandexToken.trim()) void saveYandexToken(yandexToken) }} />
+              {yandexSaved && <button type="button" className="secondary"
+                onClick={() => void forgetYandexToken()} disabled={busy}>Забыть токен</button>}
+            </div>
+            <p className="muted">
+              Где взять:{' '}
+              <button type="button" className="text-button" onClick={() => void window.mustplay.openYandexTokenHelp()}>
+                ym-token.marshal.dev
+              </button>{' '}
+              — сторонний сервис, он попросит вход в Яндекс-аккаунт. Без посредника: DevTools на
+              music.yandex.ru → запрос к API → заголовок <code>Authorization</code>.
+            </p>
+          </div>
+          <div className="import-connection">
+            <div className="import-connection-head">
+              <span>Spotify Web API</span>
+              {settings.spotifyConnected
+                ? <span className="import-badge is-ready">Подключён</span>
+                : <span className="import-badge">Необязательно</span>}
+            </div>
+            <div className="import-connection-body">
+              <input className="settings-input import-input" aria-label="Client ID Spotify"
+                placeholder="Client ID из developer.spotify.com" value={clientId}
+                onChange={event => setClientId(event.currentTarget.value)}
+                onBlur={() => void saveField('spotifyClientId', clientId)} />
+              {settings.spotifyConnected
+                ? <button type="button" className="secondary" onClick={disconnectSpotify} disabled={busy}>Отключить</button>
+                : <button type="button" className="secondary" onClick={connectSpotify} disabled={busy || awaitingSpotify}>
+                  {awaitingSpotify ? 'Ждём подтверждения…' : 'Подключить'}
+                </button>}
+            </div>
+            <p className="muted">
+              Нужен только для Web API и Premium. Без него Spotify читается как публичная страница.
+              Redirect URI: <code>http://127.0.0.1:8888/callback</code>.
+            </p>
+          </div>
+        </section>
+
+        <section className="import-settings-group" aria-labelledby="import-acoustid-title">
+          <h3 id="import-acoustid-title">AcoustID</h3>
+          <div className="import-settings-row">
+            <div>
+              <span>Ключ</span>
+              <p className="muted">Встроенного хватает для сверки отпечатков; свой можно взять на acoustid.org.</p>
+            </div>
+            <input className="settings-input import-input" aria-label="Ключ AcoustID" placeholder="встроенный"
+              value={acoustidKey} onChange={event => setAcoustidKey(event.currentTarget.value)}
+              onBlur={() => void saveField('acoustidKey', acoustidKey)} />
+          </div>
+        </section>
+      </div>
     </details>
   </section>
 }
