@@ -1,8 +1,14 @@
 # mustplay
 
-Десктопный плеер для локальной музыки на Windows. Он собирает локальные аудиофайлы в библиотеку и подбирает треки из неё в персональном радио «Моя волна». Текущая версия — **0.8.0**. [Что изменилось и как импортировать курсор](docs/RELEASE_NOTES_0.8.0.md).
+Десктопный плеер для локальной музыки на Windows. Он собирает локальные аудиофайлы в библиотеку и подбирает треки из неё в персональном радио «Моя волна». Текущая версия — **0.9.0**, линия «Поиск Яндекс Музыки» (ветка `0.9.0-yandex`). [Поиск и загрузки Яндекса](docs/YANDEX_SEARCH.md) · [Что изменилось в 0.8.0](docs/RELEASE_NOTES_0.8.0.md).
 
-*English summary · mustplay is a Windows desktop player for local audio files, with playlists, a playback queue and explainable recommendations.*
+*English summary · mustplay is a Windows desktop player for local audio files, with playlists, a playback queue and explainable recommendations. This branch adds Yandex Music search and downloads.*
+
+## Что нового в 0.9.0
+
+Раздел «Поиск»: поиск по каталогу Яндекс Музыки, очередь загрузок с прогрессом и отменой, качество `lq`/`nq`/`lossless`, обложка и текст (обычный или LRC) в файле, токен в зашифрованном профиле. Загруженные файлы затем импортируются в библиотеку обычным способом. [Подробности](docs/YANDEX_SEARCH.md).
+
+Это вторая из двух параллельных 0.9.0: импорт плейлистов с проверкой отпечатком делался в ветке `0.9.0-import`. Обе линии объединены в 0.11.0; отдельного релиза 0.9.0 не было.
 
 ## Возможности 0.8.0
 
