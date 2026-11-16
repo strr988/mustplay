@@ -49,6 +49,7 @@ try {
     '-File', join(root, 'scripts', 'set-windows-icon.ps1'),
     '-Executable', packagedExe, '-Icon', join(root, 'src', 'assets', 'mustplay.ico')], { stdio: 'inherit' })
   await rm(join(packageDir, 'resources', 'default_app.asar'))
+  await rm(join(packageDir, 'debug.log'), { force: true })
   const appDir = join(packageDir, 'resources', 'app')
   await mkdir(appDir)
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ name, productName, version, type, main }, null, 2) + '\n')
