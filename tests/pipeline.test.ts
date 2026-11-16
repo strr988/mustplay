@@ -11,8 +11,9 @@ import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } f
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
 import {
   audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, parseDownloadedPath,
-  parsePlaylistOutput, parseSearchOutput, playlistArguments,
+  parsePlaylistOutput, parseSearchOutput, playlistArguments, playlistFromFailure,
 } from '../src/audio/ytdlp'
+import { ProcessError } from '../src/audio/process'
 import { AcoustidKeyError, Fingerprinter } from '../src/pipeline/fingerprint'
 import { retry } from '../src/pipeline/limiter'
 import { judgeFingerprint, pickCandidate } from '../src/pipeline/match'
@@ -45,6 +46,11 @@ describe('playlist links', () => {
     expect(parsePlaylistUrl('https://example.com/playlist/1')).toBeNull()
     expect(parsePlaylistUrl('')).toBeNull()
     expect(parsePlaylistUrl(`https://open.spotify.com/playlist/${'a'.repeat(3000)}`)).toBeNull()
+    // Only playlists and sets are resolved; the interface must not promise more.
+    expect(parsePlaylistUrl('https://www.deezer.com/album/302127')).toBeNull()
+    expect(parsePlaylistUrl('https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT')).toBeNull()
+    expect(parsePlaylistUrl('https://soundcloud.com/forss/soulhack')).toBeNull()
+    expect(parsePlaylistUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull()
   })
 })
 
@@ -148,6 +154,22 @@ describe('yt-dlp helpers', () => {
     expect(args).not.toContain('--flat-playlist')
     expect(args).toContain('--ignore-errors')
     expect(args).toContain('100')
+  })
+
+  it('keeps readable entries when yt-dlp exits over one broken record', () => {
+    const partial = JSON.stringify({
+      title: 'Set with a DRM track',
+      entries: [
+        { id: '1', title: 'Good one', webpage_url: 'https://soundcloud.com/a/good-one' },
+      ],
+    })
+    const parsed = playlistFromFailure(new ProcessError('yt-dlp', 1, 'ERROR: DRM protected', partial))
+    expect(parsed?.name).toBe('Set with a DRM track')
+    expect(parsed?.tracks).toHaveLength(1)
+    // A real network failure carries no JSON, so it stays a failure.
+    expect(playlistFromFailure(new ProcessError('yt-dlp', 1, 'read timed out'))).toBeNull()
+    expect(playlistFromFailure(new Error('boom'))).toBeNull()
+    expect(playlistFromFailure(new ProcessError('yt-dlp', 1, 'DRM', JSON.stringify({ entries: [] })))).toBeNull()
   })
 
   it('parses a Yandex Music playlist with the session endpoint', () => {

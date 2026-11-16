@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import type { AudioCandidate, PipelineTrackInput } from '../shared/pipeline'
-import { runProcess } from './process'
+import { runProcess, ProcessError } from './process'
 
 export const searchLimit = 5
 export const downloadTimeoutMs = 10 * 60 * 1000
@@ -202,6 +202,17 @@ export function parsePlaylistOutput(stdout: string): { name: string | null; trac
   }
 }
 
+/**
+ * `--ignore-errors` keeps the readable entries in stdout even when the process
+ * exits non-zero because one record is DRM-protected. Losing the whole set over
+ * a single bad entry would be worse than skipping it.
+ */
+export function playlistFromFailure(error: unknown): { name: string | null; tracks: PipelineTrackInput[] } | null {
+  if (!(error instanceof ProcessError)) return null
+  const parsed = parsePlaylistOutput(error.stdout)
+  return parsed?.tracks.length ? parsed : null
+}
+
 export class YtDlp {
   constructor(private readonly binary: string) {}
 
@@ -229,6 +240,8 @@ export class YtDlp {
       }))
     } catch (error) {
       if (signal?.aborted) throw error
+      const partial = playlistFromFailure(error)
+      if (partial) return partial
       throw describeYtDlpFailure(error)
     }
     const parsed = parsePlaylistOutput(stdout)

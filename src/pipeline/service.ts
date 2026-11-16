@@ -160,19 +160,21 @@ export class PipelineService {
 
   async startPipelineImport(url: string, settings: PipelineSettings, workers: number): Promise<PipelineJob> {
     const ref = parsePlaylistUrl(url)
-    if (!ref) throw new Error('Неизвестная ссылка плейлиста')
+    if (!ref) {
+      throw new Error('Ссылка не распознана: по ссылке импортируются плейлисты Deezer и Spotify, а также сеты SoundCloud')
+    }
 
     let playlist: ProviderPlaylist
     let sourceNote: string | null = null
     if (ref.provider === 'ytmusic') {
-      throw new Error('YT Music импортируется через веб-сессию: нажмите «Открыть YT Music» и войдите в свой аккаунт')
+      throw new Error('YT Music читается только в веб-сессии: откройте плитку YT Music и войдите в свой аккаунт')
     }
     // SoundCloud playlists are public pages yt-dlp can read without a login,
     // which also works when the SoundCloud site itself is blocked.
     if (stubProviders.has(ref.provider) && ref.provider !== 'soundcloud') {
       if ((webSourceProviders as readonly string[]).includes(ref.provider)) {
         const label = pipelineProviderLabels[ref.provider]
-        throw new Error(`${label} импортируется через веб-сессию: нажмите «${label}» в блоке сервисов и войдите в свой аккаунт`)
+        throw new Error(`Чтение плейлистов ${label} ещё не подключено: сервис вернётся, когда появится рабочий источник записей`)
       }
       throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} не поддерживается: нужен платный аккаунт`)
     }

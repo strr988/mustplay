@@ -7,7 +7,16 @@ export interface ProcessResult {
 }
 
 export class ProcessError extends Error {
-  constructor(command: string, readonly code: number | null, readonly stderr: string) {
+  constructor(
+    command: string,
+    readonly code: number | null,
+    readonly stderr: string,
+    /**
+     * Output collected before the process failed. Commands that tolerate
+     * per-entry errors still write usable JSON before exiting non-zero.
+     */
+    readonly stdout = '',
+  ) {
     super(`${command} завершился с кодом ${code ?? 'неизвестно'}${stderr ? `: ${stderr.trim().split('\n').slice(-3).join(' ')}` : ''}`)
     this.name = 'ProcessError'
   }
@@ -53,7 +62,7 @@ export function runProcess(
     child.on('error', error => finish(() => reject(error)))
     child.on('close', code => finish(() => {
       if (code === 0) resolve({ stdout, stderr, code })
-      else reject(new ProcessError(command, code, stderr))
+      else reject(new ProcessError(command, code, stderr, stdout))
     }))
   })
 }
