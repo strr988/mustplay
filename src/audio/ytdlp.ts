@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import type { AudioCandidate, PipelineTrackInput } from '../shared/pipeline'
+import type { ProcessResult } from './process'
 import { runProcess, ProcessError } from './process'
 
 export const searchLimit = 5
@@ -17,14 +18,66 @@ const networkFailurePattern =
  */
 const drmFailurePattern = /DRM protected|защищён DRM/i
 
+/** Host of a source URL, so the message can name what failed to connect. */
+function sourceHost(sourceUrl?: string): string | null {
+  if (!sourceUrl) return null
+  try {
+    return new URL(sourceUrl).hostname || null
+  } catch {
+    return null
+  }
+}
+
 /** Keeps the original yt-dlp text and adds a hint the user can act on. */
-export function describeYtDlpFailure(error: unknown): unknown {
+export function describeYtDlpFailure(error: unknown, sourceUrl?: string): unknown {
   if (!(error instanceof Error)) return error
   if (isDrmFailure(error)) {
     return new Error('Трек защищён DRM в источнике: сервис не разрешает скачивание этой записи. Попробуйте другую версию или другой источник.')
   }
   if (!isNetworkFailure(error)) return error
-  return new Error(`${error.message}. Похоже, источник недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
+  const host = sourceHost(sourceUrl)
+  const where = host ? ` Соединение с ${host} оборвалось.` : ''
+  return new Error(`${error.message}. Похоже, источник недоступен из этой сети: проверьте VPN, прокси или блокировку.${where}`)
+}
+
+/** yt-dlp flag that pins connections to IPv4. */
+export const forceIpv4Flag = '--force-ipv4'
+
+/**
+ * Retry arguments that avoid a broken IPv6 route. Some tunnels advertise IPv6
+ * but drop TLS to it, while the same host answers over IPv4.
+ */
+export function forceIpv4Arguments(args: readonly string[]): string[] {
+  if (args.includes(forceIpv4Flag)) return [...args]
+  if (!args.length) return [forceIpv4Flag]
+  return [args[0]!, forceIpv4Flag, ...args.slice(1)]
+}
+
+/**
+ * Runs yt-dlp and retries a failed handshake over IPv4. Tunnels that flap fail
+ * twice in a row, hence two retries; a query error is never retried.
+ */
+export async function runYtDlp(
+  binary: string,
+  args: string[],
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<ProcessResult> {
+  const ipv4 = forceIpv4Arguments(args)
+  const attempts = [args, ipv4, ipv4]
+  let lastError: unknown
+  for (const [index, attempt] of attempts.entries()) {
+    try {
+      return await runProcess(binary, attempt, options)
+    } catch (error) {
+      lastError = error
+      if (options.signal?.aborted) throw error
+      // A null code is our own timeout; retrying would only double the wait.
+      if (!(error instanceof ProcessError) || error.code === null) throw error
+      if (!isNetworkFailure(error)) throw error
+      if (index < attempts.length - 1) await new Promise(resolve => setTimeout(resolve, 800))
+    }
+  }
+  throw lastError
 }
 
 function errorText(error: Error): string {
@@ -278,13 +331,25 @@ export function playlistFromFailure(error: unknown): {
 export class YtDlp {
   constructor(private readonly binary: string) {}
 
+  /**
+   * All calls go through the shared runner so a flapping tunnel gets the same
+   * IPv4 retry as the web-source reader.
+   */
+  private async run(
+    args: string[],
+    options: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<ProcessResult> {
+    return await runYtDlp(this.binary, args, options)
+  }
+
   async search(track: Pick<PipelineTrackInput, 'title' | 'artist'>, signal?: AbortSignal): Promise<AudioCandidate[]> {
+    const query = buildSearchQuery(track)
     try {
-      const { stdout } = await runProcess(this.binary, searchArguments(buildSearchQuery(track)), { timeoutMs: 60_000, signal })
+      const { stdout } = await this.run(searchArguments(query), { timeoutMs: 60_000, signal })
       return parseSearchOutput(stdout)
     } catch (error) {
       if (signal?.aborted) throw error
-      throw describeYtDlpFailure(error)
+      throw describeYtDlpFailure(error, 'https://www.youtube.com')
     }
   }
 
@@ -297,14 +362,14 @@ export class YtDlp {
   ): Promise<{ name: string | null; tracks: PipelineTrackInput[]; expectedCount: number; skippedDrm?: boolean }> {
     let stdout: string
     try {
-      ({ stdout } = await runProcess(this.binary, playlistArguments(url, cookiesPath, options), {
+      ({ stdout } = await this.run(playlistArguments(url, cookiesPath, options), {
         timeoutMs: options.timeoutMs ?? 3 * 60_000, signal,
       }))
     } catch (error) {
       if (signal?.aborted) throw error
       const partial = playlistFromFailure(error)
       if (partial) return partial
-      throw describeYtDlpFailure(error)
+      throw describeYtDlpFailure(error, url)
     }
     const parsed = parsePlaylistOutput(stdout)
     if (!parsed) throw new Error('Не удалось разобрать список треков из ответа yt-dlp')
@@ -315,12 +380,12 @@ export class YtDlp {
   async track(url: string, signal?: AbortSignal): Promise<PipelineTrackInput | null> {
     let stdout: string
     try {
-      ({ stdout } = await runProcess(this.binary, trackArguments(url), {
+      ({ stdout } = await this.run(trackArguments(url), {
         timeoutMs: 3 * 60_000, signal,
       }))
     } catch (error) {
       if (signal?.aborted) throw error
-      throw describeYtDlpFailure(error)
+      throw describeYtDlpFailure(error, url)
     }
     return parseTrackOutput(stdout)
   }
@@ -329,12 +394,12 @@ export class YtDlp {
     await mkdir(directory, { recursive: true })
     let stdout: string
     try {
-      ({ stdout } = await runProcess(this.binary, downloadArguments(candidate.url, directory, format), {
+      ({ stdout } = await this.run(downloadArguments(candidate.url, directory, format), {
         timeoutMs: downloadTimeoutMs, signal,
       }))
     } catch (error) {
       if (signal?.aborted) throw error
-      throw describeYtDlpFailure(error)
+      throw describeYtDlpFailure(error, candidate.url)
     }
     const path = parseDownloadedPath(stdout)
     if (!path) throw new Error('yt-dlp не сообщил путь к файлу')

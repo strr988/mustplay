@@ -3,15 +3,15 @@ import { parseDeezerPlaylist, parseDeezerSearch, pickDeezerTrack } from '../src/
 import { parseSpotifyEmbed } from '../src/metadata/providers/spotify-embed'
 import { rankMusicBrainzCandidates } from '../src/metadata/musicbrainz'
 import {
-  buildYtMusicContinuationRequest, mergeYtMusicTracks, parseYtMusicConfig, parseYtMusicContinuation,
-  parseYtMusicItem, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
+  buildYtMusicBrowseRequest, buildYtMusicContinuationRequest, mergeYtMusicTracks, parseYtMusicConfig,
+  parseYtMusicContinuation, parseYtMusicItem, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
 } from '../src/metadata/providers/ytmusic'
 import { parseSpotifyPage } from '../src/metadata/providers/spotify'
 import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } from '../src/metadata/providers/yandex'
 import { parsePlaylistUrl } from '../src/metadata/providers/types'
 import {
-  audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, parseDownloadedPath,
-  parsePlaylistOutput, parseSearchOutput, playlistArguments, playlistFromFailure,
+  audioSelector, buildSearchQuery, describeYtDlpFailure, downloadArguments, forceIpv4Arguments,
+  parseDownloadedPath, parsePlaylistOutput, parseSearchOutput, playlistArguments, playlistFromFailure,
 } from '../src/audio/ytdlp'
 import { ProcessError } from '../src/audio/process'
 import { AcoustidKeyError, Fingerprinter } from '../src/pipeline/fingerprint'
@@ -109,6 +109,15 @@ describe('yt-dlp helpers', () => {
     expect(audioSelector('m4a')).toBe('bestaudio[ext=m4a]/bestaudio/best')
     expect(downloadArguments('https://youtu.be/x', 'C:/music', 'm4a')).toContain('bestaudio[ext=m4a]/bestaudio/best')
     expect(audioSelector('original')).toBe('bestaudio/best')
+  })
+
+  it('retries a broken tunnel over IPv4 without losing the other arguments', () => {
+    const args = playlistArguments('https://soundcloud.com/x/sets/y', null)
+    const retried = forceIpv4Arguments(args)
+    expect(retried[0]).toBe('--ignore-config')
+    expect(retried).toContain('--force-ipv4')
+    expect(retried.filter(value => value === '--force-ipv4')).toHaveLength(1)
+    expect(forceIpv4Arguments(retried)).toEqual(retried)
   })
 
   it('reads a flat playlist from another service', () => {
@@ -419,6 +428,20 @@ describe('YT Music playlist parsing', () => {
     expect(parseYtMusicPlaylistId('https://music.youtube.com/')).toBeNull()
     expect(parseYtMusicPlaylistId('https://example.com/playlist?list=PLabc123456')).toBeNull()
   })
+
+  it('asks the InnerTube endpoint for the playlist the page cannot inline', () => {
+    const request = buildYtMusicBrowseRequest(
+      { apiKey: 'KEY', clientVersion: '1.2', context: { client: { clientName: 'WEB_REMIX' } } },
+      'PLabc123456',
+    )
+    expect(request.url).toContain('/youtubei/v1/browse')
+    expect(request.url).toContain('key=KEY')
+    expect(request.headers['X-YouTube-Client-Version']).toBe('1.2')
+    expect(JSON.parse(request.body)).toEqual({
+      context: { client: { clientName: 'WEB_REMIX' } },
+      browseId: 'VLPLabc123456',
+    })
+  })
 })
 
 describe('track pipeline dry run', () => {
@@ -567,6 +590,15 @@ describe('diagnostics for a broken import', () => {
     expect((blocked as Error).message).toContain('источник недоступен из этой сети')
     const other = new Error('ERROR: Unsupported URL: https://example.com')
     expect(describeYtDlpFailure(other)).toBe(other)
+  })
+
+  it('names the host that dropped the connection', () => {
+    const blocked = describeYtDlpFailure(
+      new Error('ERROR: Unable to download JSON metadata: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'),
+      'https://api-v2.soundcloud.com/tracks/123',
+    )
+    expect((blocked as Error).message).toContain('api-v2.soundcloud.com')
+    expect((blocked as Error).message).toContain('проверьте VPN')
   })
 
   it('explains DRM-protected SoundCloud tracks', () => {

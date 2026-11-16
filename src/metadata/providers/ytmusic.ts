@@ -300,6 +300,31 @@ export function buildYtMusicContinuationRequest(
   }
 }
 
+export const ytMusicBrowseUrl = 'https://music.youtube.com/youtubei/v1/browse'
+
+/**
+ * YouTube stopped embedding `ytInitialData` into the playlist HTML, so the
+ * first page has to come from the same InnerTube call the web client makes.
+ * `VL` in front of the list id is what marks it as a playlist browse.
+ */
+export function buildYtMusicBrowseRequest(
+  config: YtMusicClientConfig,
+  listId: string,
+): { url: string; headers: Record<string, string>; body: string } {
+  const url = config.apiKey
+    ? `${ytMusicBrowseUrl}?key=${encodeURIComponent(config.apiKey)}&prettyPrint=false`
+    : `${ytMusicBrowseUrl}?prettyPrint=false`
+  return {
+    url,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-YouTube-Client-Name': '67',
+      'X-YouTube-Client-Version': config.clientVersion ?? '1.20250101.00.00',
+    },
+    body: JSON.stringify({ context: config.context, browseId: `VL${listId}` }),
+  }
+}
+
 /** Accepts `music.youtube.com/playlist?list=…` and watch links that carry a list. */
 export function parseYtMusicPlaylistId(url: string): string | null {
   try {

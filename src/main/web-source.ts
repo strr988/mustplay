@@ -7,12 +7,12 @@ import type { BrowserWindow, Session } from 'electron'
 import type { ProviderPlaylist, WebSourceBounds, WebSourceProvider, WebSourceState } from '../shared/pipeline'
 import { pipelineProviderLabels } from '../shared/pipeline'
 import {
-  buildYtMusicContinuationRequest, maxPages, maxTracks, mergeYtMusicTracks,
+  buildYtMusicBrowseRequest, buildYtMusicContinuationRequest, maxPages, maxTracks, mergeYtMusicTracks,
   parseYtMusicContinuation, parseYtMusicPage, parseYtMusicPlaylist, parseYtMusicPlaylistId,
 } from '../metadata/providers/ytmusic'
+import type { YtMusicClientConfig } from '../metadata/providers/ytmusic'
 import { parseYandexPlaylist, parseYandexPlaylistUrl, yandexPlaylistEndpoint } from '../metadata/providers/yandex'
-import { parsePlaylistOutput, playlistArguments } from '../audio/ytdlp'
-import { runProcess } from '../audio/process'
+import { describeYtDlpFailure, parsePlaylistOutput, playlistArguments, runYtDlp } from '../audio/ytdlp'
 
 /**
  * Web sources are read inside the user's own browser session: the app opens a
@@ -71,6 +71,35 @@ function isAllowedUrl(value: string): boolean {
 }
 
 let ytDlpPath: (() => string | null) | null = null
+
+interface YtMusicLiveState {
+  listId: string | null
+  data: unknown
+  apiKey: string | null
+  clientVersion: string | null
+  context: unknown
+}
+
+/**
+ * The playlist page keeps its payload in `window.ytInitialData` and the client
+ * config in `ytcfg`. Reading them from the live tab is the path that works:
+ * YouTube no longer inlines this JSON into the HTML it serves.
+ */
+const readYtMusicStateScript = `(() => {
+  const cfg = typeof window.ytcfg !== 'undefined' && window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null
+  const read = key => {
+    try { return cfg ? (cfg.get(key) ?? null) : null } catch (error) { return null }
+  }
+  let listId = null
+  try { listId = new URL(location.href).searchParams.get('list') } catch (error) { listId = null }
+  return {
+    listId: listId,
+    data: typeof window.ytInitialData !== 'undefined' ? window.ytInitialData : null,
+    apiKey: read('INNERTUBE_API_KEY'),
+    clientVersion: read('INNERTUBE_CLIENT_VERSION'),
+    context: read('INNERTUBE_CONTEXT'),
+  }
+})()`
 
 /** The pipeline owns the tool manager, so it supplies the binary once it exists. */
 export function setWebSourceYtDlpResolver(resolver: () => string | null): void {
@@ -243,18 +272,42 @@ export class WebSourceManager {
 
   private async importYtMusicPlaylist(listId: string, currentUrl: string): Promise<WebSourceImport> {
     const sources = this.sourcesSession()
-    const pageUrl = `https://music.youtube.com/playlist?list=${encodeURIComponent(listId)}`
-    const response = await sources.fetch(pageUrl, {
-      headers: { 'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8' },
-    })
-    if (!response.ok) throw new Error(`YT Music ответил ${response.status}`)
-    const { initialData, config } = parseYtMusicPage(await response.text())
-    if (!initialData) throw new Error('Не удалось прочитать страницу плейлиста YT Music')
+    const live = await this.readYtMusicFromView(listId)
+    let config: YtMusicClientConfig = {
+      apiKey: live?.apiKey ?? null,
+      clientVersion: live?.clientVersion ?? null,
+      context: live?.context ?? null,
+    }
+    let payload: unknown = live?.data ?? null
 
-    const first = parseYtMusicPlaylist(initialData)
-    let tracks = first.tracks
-    let continuation = first.continuation
-    const name = first.name ?? 'Плейлист YT Music'
+    // A page shell still exposes the client config, and that is enough to ask
+    // the same InnerTube endpoint the page itself uses.
+    if (!payload && config.apiKey && config.context) {
+      payload = await this.browseYtMusicPlaylist(sources, config, listId)
+    }
+    if (!payload) {
+      const pageUrl = `https://music.youtube.com/playlist?list=${encodeURIComponent(listId)}`
+      const response = await sources.fetch(pageUrl, {
+        headers: { 'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8' },
+      })
+      if (!response.ok) throw new Error(`YT Music ответил ${response.status}`)
+      const page = parseYtMusicPage(await response.text())
+      payload = page.initialData
+      if (!config.apiKey) config = page.config
+    }
+    if (!payload) {
+      throw new Error('YT Music не отдал список треков. Откройте плейлист в окне сервиса и повторите импорт.')
+    }
+
+    const first = parseYtMusicPlaylist(payload)
+    // A tab that rendered only the header still lets us ask the API directly.
+    const browsed = first.tracks.length || !config.apiKey || !config.context
+      ? null
+      : await this.browseYtMusicPlaylist(sources, config, listId)
+    const page0 = browsed ? parseYtMusicPlaylist(browsed) : first
+    let tracks = page0.tracks
+    let continuation = page0.continuation
+    const name = page0.name ?? 'Плейлист YT Music'
     for (let page = 0; continuation && page < maxPages && tracks.length < maxTracks; page++) {
       const request = buildYtMusicContinuationRequest(config, continuation)
       const next = await sources.fetch(request.url, {
@@ -271,6 +324,43 @@ export class WebSourceManager {
       ? `Список прочитан из вашей сессии YT Music: ${tracks.length} треков, продолжение не загружено.`
       : `Список прочитан из вашей сессии YT Music: ${tracks.length} треков.`
     return { provider: 'ytmusic', url: currentUrl, playlist: { name, tracks, note } }
+  }
+
+  /**
+   * Reads the state the open playlist tab already has in memory, together with
+   * the client config the page uses for its own API calls.
+   */
+  private async readYtMusicFromView(listId: string): Promise<YtMusicLiveState | null> {
+    const view = this.view
+    if (!view || view.webContents.isDestroyed()) return null
+    try {
+      const state = await view.webContents.executeJavaScript(readYtMusicStateScript, true) as YtMusicLiveState | null
+      if (!state || typeof state !== 'object') return null
+      // The tab may have moved on; never import the wrong playlist.
+      if (!state.listId || state.listId !== listId) return null
+      return state
+    } catch {
+      return null
+    }
+  }
+
+  /** The playlist itself, through the endpoint the web client calls. */
+  private async browseYtMusicPlaylist(
+    sources: Session,
+    config: YtMusicClientConfig,
+    listId: string,
+  ): Promise<unknown | null> {
+    try {
+      const request = buildYtMusicBrowseRequest(config, listId)
+      const response = await sources.fetch(request.url, {
+        method: 'POST', headers: request.headers, body: request.body,
+      })
+      if (!response.ok) return null
+      const payload = await response.json() as unknown
+      return parseYtMusicPlaylist(payload).tracks.length ? payload : null
+    } catch {
+      return null
+    }
   }
 
   private async importYandexPlaylist(currentUrl: string, sources: Session): Promise<WebSourceImport> {
@@ -300,11 +390,12 @@ export class WebSourceManager {
     try {
       let stdout: string
       try {
-        ({ stdout } = await runProcess(binary, playlistArguments(currentUrl, cookies?.path ?? null), {
+        ({ stdout } = await runYtDlp(binary, playlistArguments(currentUrl, cookies?.path ?? null), {
           timeoutMs: 3 * 60_000,
         }))
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
+        const described = describeYtDlpFailure(error, currentUrl)
+        const reason = described instanceof Error ? described.message : String(described)
         throw new Error(`Не удалось прочитать плейлист: ${reason}`)
       }
       const parsed = parsePlaylistOutput(stdout)
