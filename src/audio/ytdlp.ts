@@ -24,7 +24,7 @@ export function describeYtDlpFailure(error: unknown): unknown {
     return new Error('Трек защищён DRM в источнике: сервис не разрешает скачивание этой записи. Попробуйте другую версию или другой источник.')
   }
   if (!networkFailurePattern.test(error.message)) return error
-  return new Error(`${error.message}. Похоже, YouTube недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
+  return new Error(`${error.message}. Похоже, источник недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
 }
 
 export function buildSearchQuery(track: Pick<PipelineTrackInput, 'title' | 'artist'>): string {
@@ -109,10 +109,27 @@ export function parseDownloadedPath(stdout: string): string | null {
   return null
 }
 
-export function playlistArguments(url: string, cookiesPath: string | null): string[] {
+export interface PlaylistOptions {
+  /**
+   * Flat mode is fast, but some services (SoundCloud sets) omit titles and
+   * page URLs. Full mode resolves every entry, which is slower but correct.
+   */
+  flat?: boolean
+  limit?: number
+}
+
+export function playlistArguments(
+  url: string,
+  cookiesPath: string | null,
+  options: PlaylistOptions = {},
+): string[] {
+  const flat = options.flat !== false
   return [
-    '--ignore-config', '--no-warnings', '--flat-playlist', '--dump-single-json',
-    '--playlist-end', '500',
+    '--ignore-config', '--no-warnings',
+    // One broken entry must not throw away the whole list.
+    ...(flat ? ['--flat-playlist'] : ['--ignore-errors']),
+    '--dump-single-json',
+    '--playlist-end', String(options.limit ?? 500),
     ...(cookiesPath ? ['--cookies', cookiesPath] : []),
     url,
   ]
@@ -203,11 +220,12 @@ export class YtDlp {
     url: string,
     cookiesPath: string | null = null,
     signal?: AbortSignal,
+    options: PlaylistOptions & { timeoutMs?: number } = {},
   ): Promise<{ name: string | null; tracks: PipelineTrackInput[] }> {
     let stdout: string
     try {
-      ({ stdout } = await runProcess(this.binary, playlistArguments(url, cookiesPath), {
-        timeoutMs: 3 * 60_000, signal,
+      ({ stdout } = await runProcess(this.binary, playlistArguments(url, cookiesPath, options), {
+        timeoutMs: options.timeoutMs ?? 3 * 60_000, signal,
       }))
     } catch (error) {
       if (signal?.aborted) throw error

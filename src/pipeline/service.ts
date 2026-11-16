@@ -184,7 +184,11 @@ export class PipelineService {
     } else if (ref.provider === 'soundcloud') {
       const ytdlp = this.ytdlp()
       if (!ytdlp) throw new Error('yt-dlp не установлен')
-      const parsed = await ytdlp.playlist(ref.url)
+      // SoundCloud sets only carry a bare URL in flat mode, so every entry is
+      // resolved to get its real title and page link.
+      const parsed = await ytdlp.playlist(ref.url, null, undefined, {
+        flat: false, limit: 100, timeoutMs: 10 * 60_000,
+      })
       if (!parsed.tracks.length) throw new Error('В плейлисте не нашлось треков')
       playlist = {
         name: parsed.name ?? 'Плейлист SoundCloud',

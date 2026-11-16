@@ -143,6 +143,13 @@ describe('yt-dlp helpers', () => {
     })
   })
 
+  it('asks for full entries when a service omits titles', () => {
+    const args = playlistArguments('https://soundcloud.com/x/sets/y', null, { flat: false, limit: 100 })
+    expect(args).not.toContain('--flat-playlist')
+    expect(args).toContain('--ignore-errors')
+    expect(args).toContain('100')
+  })
+
   it('parses a Yandex Music playlist with the session endpoint', () => {
     expect(parseYandexPlaylistUrl('https://music.yandex.ru/users/artem/playlists/3')).toEqual({ owner: 'artem', kind: '3' })
     expect(parseYandexPlaylistUrl('https://music.yandex.ru/playlists/3')).toBeNull()
@@ -535,7 +542,7 @@ describe('diagnostics for a broken import', () => {
     const blocked = describeYtDlpFailure(new Error(
       'ERROR: Unable to download API page: [SSL: INVALID_SESSION_ID] invalid session id',
     ))
-    expect((blocked as Error).message).toContain('YouTube недоступен из этой сети')
+    expect((blocked as Error).message).toContain('источник недоступен из этой сети')
     const other = new Error('ERROR: Unsupported URL: https://example.com')
     expect(describeYtDlpFailure(other)).toBe(other)
   })
