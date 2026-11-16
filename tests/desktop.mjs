@@ -141,3 +141,8 @@ test('interface scale and audio effects apply live and restore across restarts',
   await run('scale-effects')
   await run('scale-effects-restart')
 })
+
+test('Yandex search section renders and stores download settings in Electron', { timeout: 40_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('search-ui')
+})

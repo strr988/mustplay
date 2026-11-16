@@ -14,6 +14,7 @@ import { PlayerSettings } from './player-settings'
 import { usePlayback } from './playback'
 import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
+import { Search } from './search'
 import { ThemeToggle } from './theme-toggle'
 import { Wave } from './wave'
 import { WindowTitle } from './window-title'
@@ -22,6 +23,7 @@ const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
   { id: 'wave', label: 'Моя волна', icon: 'wave' },
   { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
+  { id: 'search', label: 'Поиск', icon: 'search' },
   { id: 'lyrics', label: 'Текст песни', icon: 'lyrics' },
   { id: 'settings', label: 'Настройки', icon: 'settings' },
 ] as const
@@ -401,6 +403,9 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
             <div hidden={section !== 'playlists'}>
               <Playlists active={section === 'playlists'} tracks={tracks} playbackReady={playback.ready && !playback.loading}
                 request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
+            </div>
+            <div hidden={section !== 'search'}>
+              <Search />
             </div>
             <div hidden={section !== 'lyrics'}>
               <LyricsPanel key={JSON.stringify([playback.track?.id, playback.track?.artworkUrl, playback.track?.available])}

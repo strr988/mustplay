@@ -54,7 +54,7 @@ function isSizedJpeg(bytes: Buffer): boolean {
   return false
 }
 
-function artworkMime(data: Uint8Array): Image['mime'] | null {
+export function artworkMime(data: Uint8Array): Image['mime'] | null {
   if (data.length > maxImageBytes) return null
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
   if (bytes.subarray(0, 8).equals(pngSignature) && isStaticPng(bytes)) return 'image/png'

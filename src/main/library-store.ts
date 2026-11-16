@@ -5,7 +5,7 @@ import type { CursorPreset, CursorSettings, LyricsMode, Track, LibraryTrack, Lis
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
-import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
+import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, Theme, YandexLyricsFormat, YandexQuality } from '../shared/contracts'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -105,6 +105,17 @@ const migrations = [
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
   ) STRICT;`,
   migrateAudioFormats,
+  `CREATE TABLE yandex_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    token BLOB,
+    token_encrypted INTEGER NOT NULL CHECK (token_encrypted IN (0, 1)),
+    quality TEXT NOT NULL CHECK (quality IN ('lq', 'nq', 'lossless')),
+    lyrics TEXT NOT NULL CHECK (lyrics IN ('none', 'text', 'lrc')),
+    embed_cover INTEGER NOT NULL CHECK (embed_cover IN (0, 1)),
+    folder TEXT
+  ) STRICT;
+  INSERT INTO yandex_settings (id, token, token_encrypted, quality, lyrics, embed_cover, folder)
+    VALUES (1, NULL, 0, 'nq', 'lrc', 1, NULL);`,
 ]
 
 function migrateAudioFormats(db: DatabaseSync): void {
@@ -395,6 +406,35 @@ export class LibraryStore implements ListeningDataReader {
     if (accelerator === null) this.db.prepare('DELETE FROM global_shortcuts WHERE action = ?').run(action)
     else this.db.prepare(`INSERT INTO global_shortcuts VALUES (?, ?)
       ON CONFLICT (action) DO UPDATE SET accelerator = excluded.accelerator`).run(action, accelerator)
+  }
+
+  getYandexSettings(): { token: Uint8Array | null; tokenEncrypted: boolean; quality: YandexQuality; lyrics: YandexLyricsFormat; embedCover: boolean; folder: string | null } {
+    const row = this.db.prepare('SELECT token, token_encrypted, quality, lyrics, embed_cover, folder FROM yandex_settings WHERE id = 1')
+      .get() as { token: Uint8Array | null; token_encrypted: number; quality: YandexQuality; lyrics: YandexLyricsFormat; embed_cover: number; folder: string | null }
+    return {
+      token: row.token, tokenEncrypted: row.token_encrypted === 1, quality: row.quality,
+      lyrics: row.lyrics, embedCover: row.embed_cover === 1, folder: row.folder,
+    }
+  }
+
+  setYandexToken(token: Uint8Array | null, encrypted: boolean): void {
+    this.db.prepare('UPDATE yandex_settings SET token = ?, token_encrypted = ? WHERE id = 1').run(token, Number(encrypted))
+  }
+
+  setYandexQuality(quality: YandexQuality): void {
+    this.db.prepare('UPDATE yandex_settings SET quality = ? WHERE id = 1').run(quality)
+  }
+
+  setYandexLyrics(lyrics: YandexLyricsFormat): void {
+    this.db.prepare('UPDATE yandex_settings SET lyrics = ? WHERE id = 1').run(lyrics)
+  }
+
+  setYandexEmbedCover(enabled: boolean): void {
+    this.db.prepare('UPDATE yandex_settings SET embed_cover = ? WHERE id = 1').run(Number(enabled))
+  }
+
+  setYandexFolder(folder: string | null): void {
+    this.db.prepare('UPDATE yandex_settings SET folder = ? WHERE id = 1').run(folder)
   }
 
   getWaveMode(): WaveMode {

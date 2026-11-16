@@ -56,6 +56,18 @@ export const channels = {
   getShortcuts: 'shortcuts:get',
   setShortcut: 'shortcuts:set',
   setShortcutCapture: 'shortcuts:set-capture',
+  getYandexSettings: 'yandex:get-settings',
+  setYandexToken: 'yandex:set-token',
+  setYandexQuality: 'yandex:set-quality',
+  setYandexLyrics: 'yandex:set-lyrics',
+  setYandexEmbedCover: 'yandex:set-embed-cover',
+  chooseYandexFolder: 'yandex:choose-folder',
+  openYandexTokenPage: 'yandex:open-token-page',
+  yandexSearch: 'yandex:search',
+  yandexDownload: 'yandex:download',
+  yandexCancelDownload: 'yandex:cancel-download',
+  getYandexDownloads: 'yandex:get-downloads',
+  yandexDownloads: 'yandex:downloads',
 } as const
 
 export const playerScheme = 'mustplay'
@@ -283,6 +295,49 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
+export const yandexQualities = ['lq', 'nq', 'lossless'] as const
+export type YandexQuality = typeof yandexQualities[number]
+export const yandexLyricsFormats = ['none', 'text', 'lrc'] as const
+export type YandexLyricsFormat = typeof yandexLyricsFormats[number]
+
+export interface YandexSettings {
+  hasToken: boolean
+  quality: YandexQuality
+  lyrics: YandexLyricsFormat
+  embedCover: boolean
+  folderLabel: string | null
+}
+
+export interface YandexTrack {
+  id: string
+  title: string
+  artist: string | null
+  album: string | null
+  durationSeconds: number | null
+  coverUrl: string | null
+  available: boolean
+}
+
+export interface YandexSearchResult {
+  tracks: YandexTrack[]
+  total: number
+  page: number
+  perPage: number
+}
+
+export type YandexDownloadStatus = 'queued' | 'downloading' | 'tagging' | 'complete' | 'error' | 'cancelled'
+export interface YandexDownload {
+  id: string
+  trackId: string
+  title: string
+  artist: string | null
+  status: YandexDownloadStatus
+  progress: number
+  receivedBytes: number
+  totalBytes: number
+  error: string | null
+}
+
 export interface MustplayApi {
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
@@ -334,4 +389,16 @@ export interface MustplayApi {
   getShortcuts(): Promise<ShortcutBindings>
   setShortcut(action: ShortcutAction, accelerator: string | null): Promise<ShortcutResult>
   setShortcutCapture(capturing: boolean): Promise<void>
+  getYandexSettings(): Promise<YandexSettings>
+  setYandexToken(token: string): Promise<YandexSettings>
+  setYandexQuality(quality: YandexQuality): Promise<void>
+  setYandexLyrics(format: YandexLyricsFormat): Promise<void>
+  setYandexEmbedCover(enabled: boolean): Promise<void>
+  chooseYandexFolder(): Promise<YandexSettings>
+  openYandexTokenPage(): Promise<void>
+  yandexSearch(text: string, page: number): Promise<YandexSearchResult>
+  yandexDownload(trackId: string): Promise<YandexDownload>
+  yandexCancelDownload(id: string): Promise<void>
+  getYandexDownloads(): Promise<YandexDownload[]>
+  onYandexDownloads(callback: (downloads: YandexDownload[]) => void): () => void
 }

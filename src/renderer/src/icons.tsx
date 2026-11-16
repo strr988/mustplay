@@ -23,6 +23,8 @@ const drawings = {
   folders: <path d="M3 19h14V8h-7L8 6H3zM7 3h8l2 2h4v11" />,
   refresh: <path d="M20 4v5h-5M4 20v-5h5m11-6a8 8 0 0 0-13-3m-3 9a8 8 0 0 0 13 3" />,
   search: <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></>,
+  download: <path d="M12 3v12m-5-5 5 5 5-5M4 21h16" />,
+  check: <path d="m5 12 5 5 9-10" />,
   up: <path d="M12 20V4m-6 6 6-6 6 6" />,
   down: <path d="M12 4v16m-6-6 6 6 6-6" />,
   left: <path d="m14 6-6 6 6 6" />,

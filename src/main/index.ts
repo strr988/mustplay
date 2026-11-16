@@ -14,6 +14,7 @@ import { Artwork } from './artwork'
 import { validatePlaybackEvent, validatePreference } from './feedback-validation'
 import { validatePlaybackSession } from './playback-session'
 import { registerPlayerExperience } from './player-experience'
+import { registerYandex } from './yandex-service'
 import { resolveLibraryPath, resolveProfileDirectory } from './library-profile'
 import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
@@ -307,7 +308,9 @@ async function start(): Promise<void> {
   const library = new Library(resolveLibraryPath(userData))
   nativeTheme.themeSource = library.getTheme()
   const artwork = new Artwork(library)
+  const yandex = registerYandex(library, () => window, senderWindow)
   app.once('will-quit', () => library.close())
+  app.once('will-quit', yandex.dispose)
 
   const playerSession = session.fromPartition('mustplay')
   const canEnterFullscreen = (contents: WebContents | null, permission: string, details: {
@@ -356,6 +359,10 @@ async function start(): Promise<void> {
     if (url.pathname.startsWith('/artwork/')) {
       const id = url.pathname.slice('/artwork/'.length)
       return idPattern.test(id) ? artwork.serve(request, id) : new Response(null, { status: 404 })
+    }
+    if (url.pathname.startsWith('/yandex-cover/')) {
+      const id = url.pathname.slice('/yandex-cover/'.length)
+      return /^\d{1,20}$/.test(id) ? yandex.coverProxy.serve(request, id) : new Response(null, { status: 404 })
     }
     const asset = assets.get(url.pathname)
     return asset ? net.fetch(asset.href, { method: request.method }) : new Response(null, { status: 404 })

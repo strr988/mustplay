@@ -11,7 +11,7 @@ import { audioFormatForPath, matchesAudioFormat } from './audio-formats'
 import { filterPlaybackSession } from './playback-session'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
-import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
+import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, Theme, YandexLyricsFormat, YandexQuality, YandexSettings } from '../shared/contracts'
 
 interface ScannedFile {
   path: string
@@ -130,6 +130,21 @@ export class Library implements ListeningDataReader {
   setMiniPinned(pinned: boolean): void { this.store.setMiniPinned(pinned) }
   getShortcuts() { return this.store.getShortcuts() }
   setShortcut(action: ShortcutAction, accelerator: string | null): void { this.store.setShortcut(action, accelerator) }
+
+  getYandexSettings(): YandexSettings {
+    const { token, quality, lyrics, embedCover, folder } = this.store.getYandexSettings()
+    return {
+      hasToken: token !== null && token.length > 0, quality, lyrics, embedCover,
+      folderLabel: folder ? folder.split(sep).filter(Boolean).slice(-2).join(' / ') || 'Корневая папка' : null,
+    }
+  }
+  getYandexTokenBlob() { return this.store.getYandexSettings() }
+  setYandexTokenBlob(token: Uint8Array | null, encrypted: boolean): void { this.store.setYandexToken(token, encrypted) }
+  setYandexQuality(quality: YandexQuality): void { this.store.setYandexQuality(quality) }
+  setYandexLyrics(lyrics: YandexLyricsFormat): void { this.store.setYandexLyrics(lyrics) }
+  setYandexEmbedCover(enabled: boolean): void { this.store.setYandexEmbedCover(enabled) }
+  setYandexFolder(folder: string | null): void { this.store.setYandexFolder(folder) }
+  getYandexFolder(): string | null { return this.store.getYandexSettings().folder }
   getPlaybackSession() {
     const session = this.store.getPlaybackSession()
     if (!session) return null
