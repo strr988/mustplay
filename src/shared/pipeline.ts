@@ -94,6 +94,11 @@ export type PipelineDownloadFormat = 'm4a' | 'original'
 export interface PipelineSettings {
   spotifyClientId: string
   acoustidKey: string
+  /**
+   * Yandex Music OAuth token. It is a credential, so the renderer only ever
+   * receives an empty string plus `PipelineStatus.yandexTokenSaved`.
+   */
+  yandexToken: string
   downloadDir: string
   workers: number
   format: PipelineDownloadFormat
@@ -115,6 +120,8 @@ export interface PipelineTools {
 
 export interface PipelineStatus {
   settings: PipelineSettings
+  /** Whether a Yandex Music token is stored; the token itself stays in Main. */
+  yandexTokenSaved: boolean
   tools: PipelineTools
   job: PipelineJob | null
 }

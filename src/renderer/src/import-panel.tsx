@@ -8,6 +8,7 @@ import { pipelineProviderLabels, webSourceProviders } from '../../shared/pipelin
 const emptySettings: PipelineSettings = {
   spotifyClientId: '',
   acoustidKey: '',
+  yandexToken: '',
   downloadDir: '',
   workers: 3,
   format: 'm4a',
@@ -117,6 +118,8 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
   const [url, setUrl] = useState('')
   const [clientId, setClientId] = useState('')
   const [acoustidKey, setAcoustidKey] = useState('')
+  const [yandexToken, setYandexToken] = useState('')
+  const [yandexSaved, setYandexSaved] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState<'ok' | 'error' | null>(null)
   const [busy, setBusy] = useState(false)
@@ -135,6 +138,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setStatus(state)
       setClientId(state.settings.spotifyClientId)
       setAcoustidKey(state.settings.acoustidKey)
+      setYandexSaved(state.yandexTokenSaved)
       if (state.job?.status === 'running') setActiveJob(state.job)
     }).catch(() => { if (mounted.current) setNotice('Не удалось загрузить настройки импорта.') })
     void window.mustplay.listPipelineJobs().then(list => {
@@ -255,6 +259,35 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
     setStatus(state)
     setClientId(state.settings.spotifyClientId)
     setAcoustidKey(state.settings.acoustidKey)
+    setYandexSaved(state.yandexTokenSaved)
+  }
+
+  async function saveYandexToken(token: string) {
+    const trimmed = token.trim()
+    if (!trimmed) return
+    try {
+      await window.mustplay.savePipelineSettings({ yandexToken: trimmed })
+      setYandexToken('')
+      await refreshStatus()
+      setNotice('Токен Яндекс Музыки сохранён.')
+      setNoticeKind('ok')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось сохранить токен Яндекса.')
+      setNoticeKind('error')
+    }
+  }
+
+  async function forgetYandexToken() {
+    try {
+      await window.mustplay.savePipelineSettings({ yandexToken: '' })
+      setYandexToken('')
+      await refreshStatus()
+      setNotice('Токен Яндекс Музыки удалён.')
+      setNoticeKind('ok')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Не удалось удалить токен Яндекса.')
+      setNoticeKind('error')
+    }
   }
 
   async function saveField<K extends keyof PipelineSettings>(key: K, value: PipelineSettings[K]) {
@@ -682,6 +715,28 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
           {toolsReady ? 'Проверить снова' : 'Установить инструменты'}
         </button>
       </div>
+
+      <details className="import-details-nested">
+        <summary>
+          <span>Яндекс Музыка <span className="muted">— OAuth-токен аккаунта</span></span>
+        </summary>
+        <p className="muted">
+          Токен нужен, чтобы читать плейлисты и получать прямые ссылки на аудио через api.music.yandex.net.
+          Приложение хранит его только в своём профиле и отправляет только Яндексу.
+        </p>
+        <label className="import-field">
+          <span>Токен Яндекс Музыки</span>
+          <input type="password" autoComplete="off" spellCheck={false} className="settings-input import-input"
+            placeholder={yandexSaved ? 'токен сохранён — вставьте новый, чтобы заменить' : 'OAuth-токен'}
+            value={yandexToken}
+            onChange={event => setYandexToken(event.currentTarget.value)}
+            onBlur={() => { if (yandexToken.trim()) void saveYandexToken(yandexToken) }} />
+        </label>
+        {yandexSaved && <div className="settings-actions">
+          <span className="import-badge is-ready">Токен сохранён</span>
+          <button type="button" className="secondary" onClick={() => void forgetYandexToken()} disabled={busy}>Забыть токен</button>
+        </div>}
+      </details>
 
       <details className="import-details-nested">
         <summary>

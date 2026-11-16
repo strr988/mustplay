@@ -456,10 +456,25 @@ async function savePipelineSettingsToDisk(): Promise<void> {
   await writeFile(pipelineSettingsPath, JSON.stringify(pipelineSettings, null, 2), 'utf8')
 }
 
+/**
+ * The renderer only learns whether a Yandex token exists. The token itself stays
+ * in Main, so it cannot leak through a React state dump or a screenshot.
+ */
+function publicPipelineSettings(): PipelineSettings {
+  return { ...pipelineSettings, yandexToken: '' }
+}
+
+function hasYandexToken(): boolean {
+  return pipelineSettings.yandexToken.trim().length > 0
+}
+
 function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSettings {
   const next = { ...pipelineSettings }
   if (typeof patch.spotifyClientId === 'string') next.spotifyClientId = patch.spotifyClientId.trim().slice(0, 200)
   if (typeof patch.acoustidKey === 'string') next.acoustidKey = patch.acoustidKey.trim().slice(0, 200)
+  // OAuth tokens are long but never contain whitespace; trimming also strips a
+  // pasted line break, which is the usual way a token breaks.
+  if (typeof patch.yandexToken === 'string') next.yandexToken = patch.yandexToken.trim().slice(0, 4000)
   if (typeof patch.workers === 'number' && Number.isFinite(patch.workers)) {
     next.workers = Math.min(5, Math.max(1, Math.round(patch.workers)))
   }
@@ -474,7 +489,12 @@ function registerPipelineIpc(): void {
   ipcMain.handle(channels.getPipelineStatus, async (event) => {
     senderWindow(event)
     const tools = await service.toolsStatus()
-    return { settings: pipelineSettings, tools, job: service.currentJob() ?? null }
+    return {
+      settings: publicPipelineSettings(),
+      yandexTokenSaved: hasYandexToken(),
+      tools,
+      job: service.currentJob() ?? null,
+    }
   })
 
   ipcMain.handle(channels.savePipelineSettings, async (event, patch: unknown) => {
@@ -482,7 +502,7 @@ function registerPipelineIpc(): void {
     if (!patch || typeof patch !== 'object') throw new Error('Invalid pipeline settings')
     pipelineSettings = normalizePipelineSettings(patch as Record<string, unknown>)
     await savePipelineSettingsToDisk()
-    return pipelineSettings
+    return publicPipelineSettings()
   })
 
   ipcMain.handle(channels.choosePipelineFolder, async (event) => {
@@ -491,7 +511,7 @@ function registerPipelineIpc(): void {
     if (result.canceled || !result.filePaths[0]) return null
     pipelineSettings.downloadDir = result.filePaths[0]
     await savePipelineSettingsToDisk()
-    return pipelineSettings
+    return publicPipelineSettings()
   })
 
   ipcMain.handle(channels.installPipelineTools, async (event) => {

@@ -24,6 +24,7 @@ import { isAbsolute, relative } from 'node:path'
 const defaultSettings: PipelineSettings = {
   spotifyClientId: '',
   acoustidKey: builtInAcoustidKey,
+  yandexToken: '',
   downloadDir: '',
   workers: pipelineImportConcurrency,
   format: 'm4a',
@@ -111,7 +112,13 @@ export class PipelineService {
   }
 
   status(settings: PipelineSettings, tools: PipelineTools): PipelineStatus {
-    return { settings: { ...defaultSettings, ...settings }, tools, job: this.currentJob() ?? null }
+    return {
+      // The token is a credential: every status payload carries only the flag.
+      settings: { ...defaultSettings, ...settings, yandexToken: '' },
+      yandexTokenSaved: (settings.yandexToken ?? '').trim().length > 0,
+      tools,
+      job: this.currentJob() ?? null,
+    }
   }
 
   currentJob(): PipelineJob | null {
