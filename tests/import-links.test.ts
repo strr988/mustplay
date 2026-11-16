@@ -1,73 +1,93 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { importActionLabel, linkNote, readLink, supportedLinks } from '../src/renderer/src/import-links'
+import {
+  blockedLinkReason, detectImportLink, importActionLabel, linkNote, supportedLinks,
+} from '../src/shared/import-links'
+import { shortLinkSource } from '../src/imports/short-links'
+import { parsePlaylistUrl } from '../src/metadata/providers/types'
 
-describe('import link recognition', () => {
-  it('accepts a SoundCloud set without a protocol', () => {
-    const link = readLink('soundcloud.com/forss/sets/soulhack')
-    expect(link).toMatchObject({ provider: 'soundcloud', kind: 'set', supported: true })
-  })
+interface CorpusEntry {
+  why: string
+  url: string
+  provider: string | null
+  kind?: string
+  supported?: boolean
+  short?: boolean
+}
 
-  it('accepts public Deezer and Spotify playlists', () => {
-    expect(readLink('https://www.deezer.com/ru/playlist/1234567')).toMatchObject({
-      provider: 'deezer', kind: 'playlist', supported: true,
+const corpus = JSON.parse(
+  readFileSync(new URL('./fixtures/import-links.json', import.meta.url), 'utf8'),
+) as CorpusEntry[]
+
+describe('import link corpus', () => {
+  it.each(corpus)('$why', entry => {
+    const info = detectImportLink(entry.url)
+    if (entry.provider === null) {
+      expect(info).toBeNull()
+      return
+    }
+    expect(info).not.toBeNull()
+    expect(info).toMatchObject({
+      provider: entry.provider,
+      kind: entry.kind,
+      supported: entry.supported,
     })
-    expect(readLink('https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc')).toMatchObject({
-      provider: 'spotify', kind: 'playlist', supported: true,
-    })
+    expect(Boolean(info?.short)).toBe(Boolean(entry.short))
   })
+})
 
-  it('refuses kinds the pipeline cannot import yet', () => {
-    // The backend only resolves playlists and sets, so the button stays off.
-    expect(readLink('https://soundcloud.com/forss/soulhack')).toMatchObject({ kind: 'track', supported: false })
-    expect(readLink('https://www.deezer.com/album/302127')).toMatchObject({ kind: 'album', supported: false })
-    expect(readLink('https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT')).toMatchObject({
-      kind: 'track', supported: false,
-    })
-  })
+describe('interface and backend agree', () => {
+  // The button is enabled only when the backend parser can read the address.
+  // The reverse is allowed: a recognised but unsupported provider (Yandex, VK)
+  // is explained instead of attempted.
+  it.each(corpus.filter(entry => entry.supported && !entry.short))(
+    'enabled link is parsed by the pipeline: $url',
+    entry => {
+      const ref = parsePlaylistUrl(entry.url)
+      expect(ref).not.toBeNull()
+      expect(ref?.provider).toBe(entry.provider)
+    },
+  )
 
-  it('sends YouTube links to the web session instead of a dead import', () => {
-    const video = readLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
-    const playlist = readLink('https://music.youtube.com/playlist?list=OLAK5uy_kExample')
-    expect(video).toMatchObject({ provider: 'ytmusic', supported: false })
-    expect(playlist).toMatchObject({ provider: 'ytmusic', supported: false })
-    expect(linkNote(video!, false)).toContain('YT Music в плитке ниже')
-  })
-
-  it('keeps Yandex and VK visible but not importable', () => {
-    expect(readLink('https://music.yandex.ru/users/demo/playlists/1')).toMatchObject({
-      provider: 'yandex', supported: false,
-    })
-    expect(readLink('https://vk.com/music/playlist/123_456')).toMatchObject({
-      provider: 'vk', supported: false,
-    })
-    expect(linkNote(readLink('https://vk.com/music/playlist/123_456')!, false)).toContain('нет резолвера')
-  })
-
-  it('flags sharing shorteners instead of guessing', () => {
-    expect(readLink('https://spotify.link/abc123')).toMatchObject({ provider: 'spotify', short: true, supported: false })
-    expect(readLink('https://on.soundcloud.com/abc123')).toMatchObject({ short: true, supported: false })
-  })
-
-  it('rejects unknown domains and unsafe schemes', () => {
-    expect(readLink('https://example.com/playlist/1')).toBeNull()
-    expect(readLink('file:///C:/music/playlist.mp3')).toBeNull()
-    expect(readLink('javascript://alert(1)')).toBeNull()
-    expect(readLink('   ')).toBeNull()
-  })
-
-  it('maps every advertised link shape to a working import', () => {
-    // The hint under the field must never list something the parser rejects.
-    expect(supportedLinks.length).toBeGreaterThan(0)
-    for (const item of supportedLinks) {
-      expect(readLink(item.url)).toMatchObject({
-        provider: item.provider, kind: item.kind, supported: true,
-      })
+  it('every enabled short link belongs to a provider with a resolver', () => {
+    for (const entry of corpus.filter(item => item.short && item.supported)) {
+      expect(shortLinkSource(entry.url)?.provider).toBe(entry.provider)
     }
   })
 
+  it('does not advertise a link the parser rejects', () => {
+    expect(supportedLinks.length).toBeGreaterThan(0)
+    for (const item of supportedLinks) {
+      const info = detectImportLink(item.url)
+      expect(info).toMatchObject({ provider: item.provider, kind: item.kind, supported: true })
+      expect(parsePlaylistUrl(item.url)?.provider).toBe(item.provider)
+    }
+  })
+
+  it('mentions the short form for every service that has one', () => {
+    for (const item of supportedLinks) {
+      const short = corpus.find(entry => entry.provider === item.provider && entry.short && entry.supported)
+      expect(short, `no short link in the corpus for ${item.provider}`).toBeDefined()
+    }
+  })
+})
+
+describe('import copy', () => {
+  it('explains a short link instead of asking for the full address', () => {
+    const info = detectImportLink('https://on.soundcloud.com/abc123')
+    expect(linkNote(info!, false)).toContain('развернём')
+  })
+
+  it('keeps Yandex visible but blocked, with the token state reflected', () => {
+    const info = detectImportLink('https://music.yandex.ru/users/demo/playlists/1')!
+    expect(blockedLinkReason(info, false)).toContain('Токен можно сохранить')
+    expect(blockedLinkReason(info, true)).toContain('ещё не подключено')
+  })
+
   it('names the action after the link kind', () => {
-    expect(importActionLabel(readLink('https://soundcloud.com/forss/sets/soulhack'))).toBe('Импортировать сет')
-    expect(importActionLabel(readLink('https://www.deezer.com/playlist/123'))).toBe('Импортировать плейлист')
+    expect(importActionLabel(detectImportLink('https://soundcloud.com/forss/sets/soulhack'))).toBe('Импортировать сет')
+    expect(importActionLabel(detectImportLink('https://www.deezer.com/playlist/123'))).toBe('Импортировать плейлист')
+    expect(importActionLabel(detectImportLink('https://on.soundcloud.com/abc'))).toBe('Импортировать')
     expect(importActionLabel(null)).toBe('Импортировать')
   })
 })

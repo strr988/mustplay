@@ -124,6 +124,9 @@ export interface PipelineStatus {
   yandexTokenSaved: boolean
   tools: PipelineTools
   job: PipelineJob | null
+  /** Build stamp, so a stale bundle is visible in the interface. */
+  version: string
+  build: string
 }
 
 export interface AudioCandidate {

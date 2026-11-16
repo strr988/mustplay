@@ -8,6 +8,7 @@ import { builtInCursors, channels, interfaceScales, isSoundEffect, maxWavePulse,
 import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
 import { webSourceProviders } from '../shared/pipeline'
 import type { PipelineSettings, WebSourceBounds, WebSourceProvider } from '../shared/pipeline'
+import { buildCommit, buildVersion } from '../shared/build-info'
 import { defaultSettings, PipelineService } from '../pipeline/service'
 import { ToolManager } from '../pipeline/tools'
 import { waitForSpotifyCallback } from '../pipeline/spotify-auth'
@@ -448,6 +449,7 @@ async function start(): Promise<void> {
     await player.loadURL(entryUrl)
   }
 
+  console.log(`mustplay ${buildVersion} (${buildCommit})`)
   await createWindow()
   app.on('second-instance', experience.focus)
   app.on('activate', () => {
@@ -499,6 +501,8 @@ function registerPipelineIpc(): void {
       yandexTokenSaved: hasYandexToken(),
       tools,
       job: service.currentJob() ?? null,
+      version: buildVersion,
+      build: buildCommit,
     }
   })
 

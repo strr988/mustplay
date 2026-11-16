@@ -15,16 +15,30 @@ const networkFailurePattern =
  * "DRM protected". Nothing can be downloaded from those pages, so the message
  * has to say that instead of showing a raw yt-dlp error.
  */
-const drmFailurePattern = /DRM protected/i
+const drmFailurePattern = /DRM protected|защищён DRM/i
 
 /** Keeps the original yt-dlp text and adds a hint the user can act on. */
 export function describeYtDlpFailure(error: unknown): unknown {
   if (!(error instanceof Error)) return error
-  if (drmFailurePattern.test(error.message)) {
+  if (isDrmFailure(error)) {
     return new Error('Трек защищён DRM в источнике: сервис не разрешает скачивание этой записи. Попробуйте другую версию или другой источник.')
   }
-  if (!networkFailurePattern.test(error.message)) return error
+  if (!isNetworkFailure(error)) return error
   return new Error(`${error.message}. Похоже, источник недоступен из этой сети: проверьте VPN, прокси или блокировку.`)
+}
+
+function errorText(error: Error): string {
+  return error instanceof ProcessError ? `${error.message}\n${error.stderr}\n${error.stdout}` : error.message
+}
+
+/** True for a single record SoundCloud refuses to serve outside its own player. */
+export function isDrmFailure(error: unknown): boolean {
+  return error instanceof Error && drmFailurePattern.test(errorText(error))
+}
+
+/** True when the service itself is unreachable, as opposed to one bad record. */
+export function isNetworkFailure(error: unknown): boolean {
+  return error instanceof Error && networkFailurePattern.test(errorText(error))
 }
 
 export function buildSearchQuery(track: Pick<PipelineTrackInput, 'title' | 'artist'>): string {
@@ -135,9 +149,19 @@ export function playlistArguments(
   ]
 }
 
+/**
+ * One track page, fully resolved. Used to enrich a flat SoundCloud set after
+ * the fast full read failed on a DRM-protected entry.
+ */
+export function trackArguments(url: string): string[] {
+  return ['--ignore-config', '--no-warnings', '--no-playlist', '--dump-single-json', url]
+}
+
 interface PlaylistEntry extends FlatEntry {
   webpage_url?: string
   album_artist?: string
+  album?: string
+  genre?: string
 }
 
 /**
@@ -154,52 +178,85 @@ function titleFromUrl(url: string): string {
   }
 }
 
+/** Converts one yt-dlp entry (flat or fully resolved) into a track. */
+function entryToTrack(raw: PlaylistEntry): PipelineTrackInput | null {
+  const webUrl = typeof raw.webpage_url === 'string' && /^https?:/i.test(raw.webpage_url)
+    ? raw.webpage_url
+    : typeof raw.url === 'string' && /^https?:/i.test(raw.url) ? raw.url : null
+  if (!webUrl) return null
+  let title = typeof raw.title === 'string' ? raw.title.trim() : ''
+  if (!title) title = titleFromUrl(webUrl)
+  if (!title) return null
+  let artist = raw.uploader?.trim() || raw.channel?.trim() || raw.album_artist?.trim() || null
+  if (!artist && title.includes(' - ')) {
+    const [left, ...rest] = title.split(' - ')
+    if (left.trim() && rest.join(' - ').trim()) {
+      artist = left.trim()
+      title = rest.join(' - ').trim()
+    }
+  }
+  const genres = typeof raw.genre === 'string' && raw.genre.trim() ? [raw.genre.trim()] : undefined
+  return {
+    title: title.slice(0, 300),
+    artist,
+    album: typeof raw.album === 'string' && raw.album.trim() ? raw.album.trim() : null,
+    durationSeconds: typeof raw.duration === 'number' && raw.duration > 0 ? raw.duration : null,
+    isrc: null,
+    ...(genres ? { genres } : {}),
+    providerId: typeof raw.id === 'string' ? raw.id : null,
+    sourceUrl: webUrl,
+  }
+}
+
 /**
  * Converts yt-dlp's flat playlist JSON into our track list. SoundCloud, VK and
  * similar services usually know the exact recording, so `sourceUrl` lets the
  * pipeline skip the YouTube search and download from the original service.
  */
-export function parsePlaylistOutput(stdout: string): { name: string | null; tracks: PipelineTrackInput[] } | null {
+export function parsePlaylistOutput(stdout: string): {
+  name: string | null
+  tracks: PipelineTrackInput[]
+  /** Entries the service declared, including ones yt-dlp skipped. */
+  expectedCount: number
+} | null {
   const trimmed = stdout.trim()
   if (!trimmed) return null
-  let payload: { title?: unknown; entries?: unknown }
+  let payload: { title?: unknown; entries?: unknown; playlist_count?: unknown; n_entries?: unknown } | null
   try {
-    payload = JSON.parse(trimmed) as { title?: unknown; entries?: unknown }
+    payload = JSON.parse(trimmed) as { title?: unknown; entries?: unknown; playlist_count?: unknown; n_entries?: unknown } | null
   } catch {
     return null
   }
-  if (!Array.isArray(payload.entries)) return null
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.entries)) return null
   const tracks: PipelineTrackInput[] = []
   for (const raw of payload.entries as (PlaylistEntry | null)[]) {
     if (!raw) continue
-    const webUrl = typeof raw.webpage_url === 'string' && /^https?:/i.test(raw.webpage_url)
-      ? raw.webpage_url
-      : typeof raw.url === 'string' && /^https?:/i.test(raw.url) ? raw.url : null
-    let title = typeof raw.title === 'string' ? raw.title.trim() : ''
-    if (!title && webUrl) title = titleFromUrl(webUrl)
-    if (!webUrl || !title) continue
-    let artist = raw.uploader?.trim() || raw.channel?.trim() || raw.album_artist?.trim() || null
-    if (!artist && title.includes(' - ')) {
-      const [left, ...rest] = title.split(' - ')
-      if (left.trim() && rest.join(' - ').trim()) {
-        artist = left.trim()
-        title = rest.join(' - ').trim()
-      }
-    }
-    tracks.push({
-      title: title.slice(0, 300),
-      artist,
-      album: null,
-      durationSeconds: typeof raw.duration === 'number' && raw.duration > 0 ? raw.duration : null,
-      isrc: null,
-      providerId: typeof raw.id === 'string' ? raw.id : null,
-      sourceUrl: webUrl,
-    })
+    const track = entryToTrack(raw)
+    if (track) tracks.push(track)
   }
+  const declared = [payload.playlist_count, payload.n_entries, payload.entries.length]
+    .find(value => typeof value === 'number' && value > 0) as number | undefined
   return {
     name: typeof payload.title === 'string' && payload.title.trim() ? payload.title.trim() : null,
     tracks,
+    expectedCount: declared ?? tracks.length,
   }
+}
+
+/** Reads the single-entry JSON yt-dlp prints for one resolved track page. */
+export function parseTrackOutput(stdout: string): PipelineTrackInput | null {
+  const trimmed = stdout.trim()
+  if (!trimmed) return null
+  const line = trimmed.split(/\r?\n/).findLast(value => value.trim().startsWith('{'))?.trim()
+  if (!line) return null
+  let payload: PlaylistEntry | null
+  try {
+    payload = JSON.parse(line) as PlaylistEntry | null
+  } catch {
+    return null
+  }
+  if (!payload || typeof payload !== 'object') return null
+  return entryToTrack(payload)
 }
 
 /**
@@ -207,10 +264,15 @@ export function parsePlaylistOutput(stdout: string): { name: string | null; trac
  * exits non-zero because one record is DRM-protected. Losing the whole set over
  * a single bad entry would be worse than skipping it.
  */
-export function playlistFromFailure(error: unknown): { name: string | null; tracks: PipelineTrackInput[] } | null {
+export function playlistFromFailure(error: unknown): {
+  name: string | null
+  tracks: PipelineTrackInput[]
+  expectedCount: number
+  skippedDrm: boolean
+} | null {
   if (!(error instanceof ProcessError)) return null
   const parsed = parsePlaylistOutput(error.stdout)
-  return parsed?.tracks.length ? parsed : null
+  return parsed?.tracks.length ? { ...parsed, skippedDrm: isDrmFailure(error) } : null
 }
 
 export class YtDlp {
@@ -232,7 +294,7 @@ export class YtDlp {
     cookiesPath: string | null = null,
     signal?: AbortSignal,
     options: PlaylistOptions & { timeoutMs?: number } = {},
-  ): Promise<{ name: string | null; tracks: PipelineTrackInput[] }> {
+  ): Promise<{ name: string | null; tracks: PipelineTrackInput[]; expectedCount: number; skippedDrm?: boolean }> {
     let stdout: string
     try {
       ({ stdout } = await runProcess(this.binary, playlistArguments(url, cookiesPath, options), {
@@ -247,6 +309,20 @@ export class YtDlp {
     const parsed = parsePlaylistOutput(stdout)
     if (!parsed) throw new Error('Не удалось разобрать список треков из ответа yt-dlp')
     return parsed
+  }
+
+  /** Resolves one track page; used to enrich a flat set entry by entry. */
+  async track(url: string, signal?: AbortSignal): Promise<PipelineTrackInput | null> {
+    let stdout: string
+    try {
+      ({ stdout } = await runProcess(this.binary, trackArguments(url), {
+        timeoutMs: 3 * 60_000, signal,
+      }))
+    } catch (error) {
+      if (signal?.aborted) throw error
+      throw describeYtDlpFailure(error)
+    }
+    return parseTrackOutput(stdout)
   }
 
   async download(candidate: AudioCandidate, directory: string, signal?: AbortSignal, format: DownloadFormat = 'original'): Promise<string> {

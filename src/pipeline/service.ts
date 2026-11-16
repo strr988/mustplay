@@ -14,7 +14,11 @@ import { DeezerProvider } from '../metadata/providers/deezer'
 import { SpotifyEmbedProvider } from '../metadata/providers/spotify-embed'
 import { SpotifyProvider, spotifyAuthorizationUrl, createCodeVerifier } from '../metadata/providers/spotify'
 import { MusicBrainzLookup } from '../metadata/musicbrainz'
-import { parsePlaylistUrl, stubProviders } from '../metadata/providers/types'
+import { stubProviders } from '../metadata/providers/types'
+import { resolveImportUrl } from '../imports/resolve-import'
+import { electronShortLinkTransport } from '../imports/electron-short-links'
+import { readSoundCloudSet } from './soundcloud'
+import { buildCommit, buildVersion } from '../shared/build-info'
 import { RateLimiter, retry } from './limiter'
 import { ToolManager } from './tools'
 import { shell } from 'electron'
@@ -118,6 +122,8 @@ export class PipelineService {
       yandexTokenSaved: (settings.yandexToken ?? '').trim().length > 0,
       tools,
       job: this.currentJob() ?? null,
+      version: buildVersion,
+      build: buildCommit,
     }
   }
 
@@ -159,10 +165,10 @@ export class PipelineService {
   }
 
   async startPipelineImport(url: string, settings: PipelineSettings, workers: number): Promise<PipelineJob> {
-    const ref = parsePlaylistUrl(url)
-    if (!ref) {
-      throw new Error('Ссылка не распознана: по ссылке импортируются плейлисты Deezer и Spotify, а также сеты SoundCloud')
-    }
+    const { ref } = await resolveImportUrl(url, {
+      transport: electronShortLinkTransport,
+      yandexSaved: !!settings.yandexToken.trim(),
+    })
 
     let playlist: ProviderPlaylist
     let sourceNote: string | null = null
@@ -193,17 +199,13 @@ export class PipelineService {
     } else if (ref.provider === 'soundcloud') {
       const ytdlp = this.ytdlp()
       if (!ytdlp) throw new Error('yt-dlp не установлен')
-      // SoundCloud sets only carry a bare URL in flat mode, so every entry is
-      // resolved to get its real title and page link.
-      const parsed = await ytdlp.playlist(ref.url, null, undefined, {
-        flat: false, limit: 100, timeoutMs: 10 * 60_000,
+      const result = await readSoundCloudSet(ref.url, {
+        playlist: (target, options) => ytdlp.playlist(target, null, undefined, {
+          flat: options?.flat, limit: options?.limit ?? 500, timeoutMs: 10 * 60_000,
+        }),
+        track: target => ytdlp.track(target),
       })
-      if (!parsed.tracks.length) throw new Error('В плейлисте не нашлось треков')
-      playlist = {
-        name: parsed.name ?? 'Плейлист SoundCloud',
-        tracks: parsed.tracks,
-        note: `Публичная страница SoundCloud: ${parsed.tracks.length} треков. Записи с DRM пропускаются.`,
-      }
+      playlist = { name: result.name ?? 'Плейлист SoundCloud', tracks: result.tracks, note: result.note }
     } else {
       throw new Error(`Платформа ${pipelineProviderLabels[ref.provider]} не поддерживается`)
     }

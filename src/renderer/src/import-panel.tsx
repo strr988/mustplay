@@ -4,7 +4,8 @@ import type {
   PipelineSettings, PipelineStatus, WebSourceProvider, WebSourceState,
 } from '../../shared/pipeline'
 import { pipelineProviderLabels } from '../../shared/pipeline'
-import { importActionLabel, linkKindLabels, linkNote, linkSummary, readLink, supportedLinks } from './import-links'
+import { detectImportLink as readLink, importActionLabel, linkKindLabels, linkNote, linkSummary, supportedLinks } from '../../shared/import-links'
+import { humanizeIpcError } from './ipc-error'
 
 const emptySettings: PipelineSettings = {
   spotifyClientId: '',
@@ -297,7 +298,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice('Токен Яндекс Музыки сохранён.')
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось сохранить токен Яндекса.')
+      setNotice(humanizeIpcError(error, 'Не удалось сохранить токен Яндекса.'))
       setNoticeKind('error')
     }
   }
@@ -310,7 +311,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice('Токен Яндекс Музыки удалён.')
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось удалить токен Яндекса.')
+      setNotice(humanizeIpcError(error, 'Не удалось удалить токен Яндекса.'))
       setNoticeKind('error')
     }
   }
@@ -366,7 +367,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice('Открыли браузер. Разрешите доступ к плейлистам и вернитесь в mustplay.')
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось открыть авторизацию Spotify.')
+      setNotice(humanizeIpcError(error, 'Не удалось открыть авторизацию Spotify.'))
       setNoticeKind('error')
     }
   }
@@ -391,7 +392,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNoticeKind(ready ? 'ok' : 'error')
     } catch (error) {
       if (mounted.current) {
-        setNotice(error instanceof Error ? error.message : 'Не удалось установить инструменты.')
+        setNotice(humanizeIpcError(error, 'Не удалось установить инструменты.'))
         setNoticeKind('error')
       }
     } finally {
@@ -427,7 +428,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice(`Импорт запущен: ${job.playlistName}`)
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось начать импорт.')
+      setNotice(humanizeIpcError(error, 'Не удалось начать импорт.'))
       setNoticeKind('error')
     } finally {
       if (mounted.current) setBusy(false)
@@ -442,7 +443,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       if (!mounted.current) return
       setWebSource(state)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось открыть сервис.')
+      setNotice(humanizeIpcError(error, 'Не удалось открыть сервис.'))
       setNoticeKind('error')
     } finally {
       if (mounted.current) setBusy(false)
@@ -460,7 +461,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice(`Импорт запущен: ${job.playlistName}`)
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось прочитать плейлист в веб-сессии.')
+      setNotice(humanizeIpcError(error, 'Не удалось прочитать плейлист в веб-сессии.'))
       setNoticeKind('error')
     } finally {
       if (mounted.current) setBusy(false)
@@ -514,7 +515,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
         setNoticeKind('error')
       }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось повторить трек.')
+      setNotice(humanizeIpcError(error, 'Не удалось повторить трек.'))
       setNoticeKind('error')
     } finally {
       if (mounted.current) setRetrying('')
@@ -531,7 +532,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
       setNotice('Трек пропущен.')
       setNoticeKind('ok')
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Не удалось пропустить трек.')
+      setNotice(humanizeIpcError(error, 'Не удалось пропустить трек.'))
       setNoticeKind('error')
     }
   }
@@ -635,6 +636,7 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
           </li>)}
         </ul>
       </div>
+      <p className="import-build">mustplay {status?.version ?? '…'} · сборка {status?.build ?? '…'}</p>
     </section>
 
     <section className="settings-card import-accounts">
