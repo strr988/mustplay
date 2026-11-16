@@ -92,6 +92,22 @@ export function readLink(raw: string): LinkInfo | null {
   return null
 }
 
+export interface SupportedLink {
+  provider: PipelineProvider
+  kind: LinkKind
+  /** A real, valid address used by tests so the hint cannot drift from the parser. */
+  url: string
+  /** Short shape shown to the user. */
+  example: string
+}
+
+/** Exactly the links the pipeline resolves today, in display order. */
+export const supportedLinks: readonly SupportedLink[] = [
+  { provider: 'deezer', kind: 'playlist', url: 'https://www.deezer.com/playlist/1234567', example: 'deezer.com/playlist/…' },
+  { provider: 'spotify', kind: 'playlist', url: 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M', example: 'open.spotify.com/playlist/…' },
+  { provider: 'soundcloud', kind: 'set', url: 'https://soundcloud.com/forss/sets/soulhack', example: 'soundcloud.com/artist/sets/…' },
+]
+
 export function linkNote(info: LinkInfo, yandexSaved: boolean): string {
   if (info.short) {
     return 'Короткая ссылка не читается. Откройте её в браузере и скопируйте полный адрес из строки.'

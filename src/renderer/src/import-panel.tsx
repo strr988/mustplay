@@ -4,7 +4,7 @@ import type {
   PipelineSettings, PipelineStatus, WebSourceProvider, WebSourceState,
 } from '../../shared/pipeline'
 import { pipelineProviderLabels } from '../../shared/pipeline'
-import { importActionLabel, linkNote, linkSummary, readLink } from './import-links'
+import { importActionLabel, linkKindLabels, linkNote, linkSummary, readLink, supportedLinks } from './import-links'
 
 const emptySettings: PipelineSettings = {
   spotifyClientId: '',
@@ -620,6 +620,20 @@ export function ImportPanel({ active, onOpenPlaylist, onLibraryChanged }: Props)
         <button type="button" className="primary" onClick={startImport} disabled={busy || running || linkBlocked}>
           {running ? 'Импорт идёт…' : busy ? 'Готовим…' : importActionLabel(link)}
         </button>
+      </div>
+
+      <div className="import-supported">
+        <span className="import-supported-label">Подойдут ссылки</span>
+        <ul className="import-supported-list">
+          {supportedLinks.map(item => <li key={item.provider}
+            className={`import-supported-item${link?.provider === item.provider && link.supported ? ' is-active' : ''}`}>
+            <span className="import-supported-mark" aria-hidden="true">{providerMarks[item.provider]}</span>
+            <span className="import-supported-text">
+              <strong>{pipelineProviderLabels[item.provider]}</strong>
+              <span className="muted">{linkKindLabels[item.kind]} · {item.example}</span>
+            </span>
+          </li>)}
+        </ul>
       </div>
     </section>
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { importActionLabel, linkNote, readLink } from '../src/renderer/src/import-links'
+import { importActionLabel, linkNote, readLink, supportedLinks } from '../src/renderer/src/import-links'
 
 describe('import link recognition', () => {
   it('accepts a SoundCloud set without a protocol', () => {
@@ -53,6 +53,16 @@ describe('import link recognition', () => {
     expect(readLink('file:///C:/music/playlist.mp3')).toBeNull()
     expect(readLink('javascript://alert(1)')).toBeNull()
     expect(readLink('   ')).toBeNull()
+  })
+
+  it('maps every advertised link shape to a working import', () => {
+    // The hint under the field must never list something the parser rejects.
+    expect(supportedLinks.length).toBeGreaterThan(0)
+    for (const item of supportedLinks) {
+      expect(readLink(item.url)).toMatchObject({
+        provider: item.provider, kind: item.kind, supported: true,
+      })
+    }
   })
 
   it('names the action after the link kind', () => {
