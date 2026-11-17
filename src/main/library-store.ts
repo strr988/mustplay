@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { audioFormats, builtInCursors, defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
-import type { CursorPreset, CursorSettings, LyricsMode, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import type { CursorPreset, CursorSettings, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
 import type { PipelineJob } from '../shared/pipeline'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
-import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, Theme, YandexLyricsFormat, YandexQuality } from '../shared/contracts'
+import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, ThemePreference, YandexLyricsFormat, YandexQuality } from '../shared/contracts'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -135,6 +135,11 @@ const migrations = [
   ) STRICT;
   INSERT INTO yandex_settings (id, token, token_encrypted, quality, lyrics, embed_cover, folder)
     VALUES (1, NULL, 0, 'nq', 'lrc', 1, NULL);`,
+  `ALTER TABLE appearance_settings RENAME COLUMN theme TO previous_theme;
+  ALTER TABLE appearance_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'
+    CHECK (theme IN ('dark', 'light', 'system'));
+  UPDATE appearance_settings SET theme = previous_theme;
+  ALTER TABLE appearance_settings DROP COLUMN previous_theme;`,
 ]
 
 /**
@@ -159,6 +164,7 @@ const migrationNames = [
   'isrc-fingerprint-cache',
   'pipeline-jobs',
   'yandex-settings',
+  'system-theme',
 ] as const
 
 if (migrationNames.length !== migrations.length) {
@@ -366,13 +372,7 @@ export class LibraryStore implements ListeningDataReader {
     this.db.close()
   }
 
-  getLyricsMode(): LyricsMode {
-    return this.db.prepare('SELECT lyrics_mode FROM appearance_settings WHERE id = 1').get()?.lyrics_mode === 'sync' ? 'sync' : 'read'
-  }
 
-  setLyricsMode(mode: LyricsMode): void {
-    this.db.prepare('UPDATE appearance_settings SET lyrics_mode = ? WHERE id = 1').run(mode)
-  }
 
   getCursorSettings(): CursorSettings {
     const custom = this.db.prepare('SELECT id, label, arrow_x, arrow_y, pointer_x, pointer_y FROM cursor_presets ORDER BY rowid').all()
@@ -470,11 +470,11 @@ export class LibraryStore implements ListeningDataReader {
     this.db.prepare('UPDATE appearance_settings SET wave_pulse = ? WHERE id = 1').run(intensity)
   }
 
-  getTheme(): Theme {
-    return this.db.prepare('SELECT theme FROM appearance_settings WHERE id = 1').get()!.theme as Theme
+  getTheme(): ThemePreference {
+    return this.db.prepare('SELECT theme FROM appearance_settings WHERE id = 1').get()!.theme as ThemePreference
   }
 
-  setTheme(theme: Theme): void {
+  setTheme(theme: ThemePreference): void {
     this.db.prepare('UPDATE appearance_settings SET theme = ? WHERE id = 1').run(theme)
   }
 
@@ -803,9 +803,9 @@ export class LibraryStore implements ListeningDataReader {
     })
   }
 
-  saveScan(folder: string, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {
+  saveScan(folder: string | null, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {
     this.transaction(() => {
-      this.db.prepare('INSERT INTO imported_folders (path) VALUES (?) ON CONFLICT DO NOTHING').run(folder)
+      if (folder !== null) this.db.prepare('INSERT INTO imported_folders (path) VALUES (?) ON CONFLICT DO NOTHING').run(folder)
       const writeTrack = this.db.prepare(`INSERT INTO tracks (id, title, artist, album, duration_seconds, genres, format)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET title = excluded.title, artist = excluded.artist,

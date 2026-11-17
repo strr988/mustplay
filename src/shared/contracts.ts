@@ -2,8 +2,8 @@ export const channels = {
   getPipelineStatus: 'pipeline:status',
   savePipelineSettings: 'pipeline:save-settings',
   choosePipelineFolder: 'pipeline:choose-folder',
+  resetPipelineFolder: 'pipeline:reset-folder',
   installPipelineTools: 'pipeline:install-tools',
-  openYandexTokenHelp: 'pipeline:yandex-token-help',
   connectPipelineSpotify: 'pipeline:spotify-connect',
   disconnectPipelineSpotify: 'pipeline:spotify-disconnect',
   exchangePipelineSpotifyCode: 'pipeline:spotify-exchange-code',
@@ -27,6 +27,7 @@ export const channels = {
   getWavePulse: 'appearance:get-wave-pulse',
   setWavePulse: 'appearance:set-wave-pulse',
   setTheme: 'appearance:set-theme',
+  getThemePreference: 'appearance:get-theme',
   getCursorSettings: 'appearance:get-cursors',
   setCursorPreset: 'appearance:set-cursor',
   importCursorPreset: 'appearance:import-cursor',
@@ -60,8 +61,6 @@ export const channels = {
   getPlaybackSession: 'playback:get-session',
   setPlaybackSession: 'playback:set-session',
   getLyrics: 'lyrics:get',
-  getLyricsMode: 'lyrics:get-mode',
-  setLyricsMode: 'lyrics:set-mode',
   openMiniPlayer: 'mini:open',
   getMiniState: 'mini:get-state',
   publishMiniState: 'mini:publish-state',
@@ -83,6 +82,7 @@ export const channels = {
   setYandexLyrics: 'yandex:set-lyrics',
   setYandexEmbedCover: 'yandex:set-embed-cover',
   chooseYandexFolder: 'yandex:choose-folder',
+  resetYandexFolder: 'yandex:reset-folder',
   openYandexTokenPage: 'yandex:open-token-page',
   yandexSearch: 'yandex:search',
   yandexDownload: 'yandex:download',
@@ -102,8 +102,8 @@ export interface CursorPreset {
 }
 export interface CursorSettings { selected: CursorPreset; presets: CursorPreset[] }
 
-export type LyricsMode = 'read' | 'sync'
 export type Theme = 'dark' | 'light'
+export type ThemePreference = Theme | 'system'
 export const themeBackground = { dark: '#15131a', light: '#f8f6fc' } satisfies Record<Theme, string>
 export const interfaceScales = [80, 90, 100, 110, 125, 150] as const
 export type InterfaceScale = typeof interfaceScales[number]
@@ -316,7 +316,7 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
-import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineSettingsPatch, PipelineStatus, PipelineTools, WebSourceBounds, WebSourceProvider, WebSourceState } from './pipeline'
+import type { PipelineJobView, PipelineJobSummary, PipelinePreferences, PipelineSettingsPatch, PipelineStatus, PipelineTools, WebSourceBounds, WebSourceProvider, WebSourceState } from './pipeline'
 
 export const yandexQualities = ['lq', 'nq', 'lossless'] as const
 export type YandexQuality = typeof yandexQualities[number]
@@ -328,7 +328,9 @@ export interface YandexSettings {
   quality: YandexQuality
   lyrics: YandexLyricsFormat
   embedCover: boolean
-  folderLabel: string | null
+  folderLabel: string
+  folderAvailable: boolean
+  usesDefaultFolder: boolean
 }
 
 export interface YandexTrack {
@@ -363,25 +365,25 @@ export interface YandexDownload {
 
 export interface MustplayApi {
   getPipelineStatus(): Promise<PipelineStatus>
-  savePipelineSettings(settings: PipelineSettingsPatch): Promise<PipelineSettings>
-  choosePipelineFolder(): Promise<PipelineSettings | null>
+  savePipelineSettings(settings: PipelineSettingsPatch): Promise<PipelinePreferences>
+  choosePipelineFolder(): Promise<PipelinePreferences | null>
+  resetPipelineFolder(): Promise<PipelinePreferences>
   installPipelineTools(): Promise<PipelineTools>
-  openYandexTokenHelp(): Promise<void>
   connectPipelineSpotify(): Promise<{ url: string }>
   disconnectPipelineSpotify(): Promise<void>
   exchangePipelineSpotifyCode(code: string, state: string): Promise<boolean>
-  startPipelineImport(url: string): Promise<PipelineJob>
-  getPipelineJob(id: string): Promise<PipelineJob | null>
+  startPipelineImport(url: string): Promise<PipelineJobView>
+  getPipelineJob(id: string): Promise<PipelineJobView | null>
   cancelPipelineImport(): Promise<void>
   listPipelineJobs(): Promise<PipelineJobSummary[]>
-  retryPipelineItem(jobId: string, itemId: string): Promise<PipelineJob>
-  skipPipelineItem(jobId: string, itemId: string): Promise<PipelineJob>
+  retryPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
+  skipPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
   openPipelineFolder(): Promise<void>
   openWebSource(provider: WebSourceProvider): Promise<WebSourceState>
   getWebSourceState(): Promise<WebSourceState>
   setWebSourceBounds(bounds: WebSourceBounds): Promise<void>
   closeWebSource(): Promise<void>
-  importWebSourcePlaylist(): Promise<PipelineJob>
+  importWebSourcePlaylist(): Promise<PipelineJobView>
   clearWebSourceData(): Promise<void>
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
@@ -389,7 +391,8 @@ export interface MustplayApi {
   setWaveMode(mode: WaveMode): Promise<void>
   getWavePulse(): Promise<number>
   setWavePulse(intensity: number): Promise<void>
-  setTheme(theme: Theme): Promise<void>
+  getThemePreference(): Promise<ThemePreference>
+  setTheme(theme: ThemePreference): Promise<void>
   getCursorSettings(): Promise<CursorSettings>
   setCursorPreset(id: string): Promise<CursorSettings>
   importCursorPreset(): Promise<CursorSettings | null>
@@ -422,8 +425,6 @@ export interface MustplayApi {
   getPlaybackSession(): Promise<PlaybackSession | null>
   setPlaybackSession(session: PlaybackSession): Promise<void>
   getLyrics(trackId: string): Promise<Lyrics | null>
-  getLyricsMode(): Promise<LyricsMode>
-  setLyricsMode(mode: LyricsMode): Promise<void>
   openMiniPlayer(): Promise<void>
   publishMiniState(state: MiniPlayback): Promise<void>
   onShowFullPlayer(callback: (open: boolean) => void): () => void
@@ -439,6 +440,7 @@ export interface MustplayApi {
   setYandexLyrics(format: YandexLyricsFormat): Promise<void>
   setYandexEmbedCover(enabled: boolean): Promise<void>
   chooseYandexFolder(): Promise<YandexSettings>
+  resetYandexFolder(): Promise<YandexSettings>
   openYandexTokenPage(): Promise<void>
   yandexSearch(text: string, page: number): Promise<YandexSearchResult>
   yandexDownload(trackId: string): Promise<YandexDownload>

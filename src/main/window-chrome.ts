@@ -1,7 +1,12 @@
+import { nativeTheme } from 'electron'
 import type { BrowserWindowConstructorOptions } from 'electron'
 import type { Theme } from '../shared/contracts'
 
 export const hasTitleBarOverlay = process.platform === 'win32' || process.platform === 'linux'
+
+export function currentTheme(): Theme {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
 
 export function titleBarColors(theme: Theme) {
   const light = theme === 'light'

@@ -155,10 +155,10 @@ describe('resolveImportUrl', () => {
     await expect(resolveImportUrl('https://vk.com/music/playlist/123_456'))
       .rejects.toThrow('нет резолвера прямых ссылок')
     await expect(resolveImportUrl('https://music.youtube.com/playlist?list=OLAK5uy_kExample'))
-      .rejects.toThrow('Откройте YT Music')
+      .rejects.toThrow('Откройте YouTube Music')
     // A YouTube short link is unsupported, so the resolver is never called.
     await expect(resolveImportUrl('https://youtu.be/dQw4w9WgXcQ', { transport: failing }))
-      .rejects.toThrow('Откройте YT Music')
+      .rejects.toThrow('Откройте YouTube Music')
   })
 
   it('refuses an album or an artist page with a specific reason', async () => {

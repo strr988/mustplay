@@ -104,7 +104,7 @@ function supportedKind(source: ImportSource, kind: LinkKind): boolean {
  */
 export function detectImportLink(raw: string): LinkInfo | null {
   const text = raw.trim()
-  if (!text) return null
+  if (!text || /\s/.test(text)) return null
 
   const uri = spotifyUri.exec(text)
   if (uri) {
@@ -119,7 +119,7 @@ export function detectImportLink(raw: string): LinkInfo | null {
   } catch {
     return null
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null
 
   const host = url.hostname.toLowerCase().replace(/^www\./, '')
   const path = url.pathname.toLowerCase()
@@ -190,7 +190,7 @@ export function blockedLinkReason(info: LinkInfo, yandexSaved = false): string {
   }
   if (info.provider === 'vk') return 'Импорт из ВК пока недоступен: нет резолвера прямых ссылок на аудио.'
   if (info.provider === 'ytmusic') {
-    return 'Ссылку YouTube нельзя импортировать напрямую. Откройте YT Music в плитке ниже и войдите в аккаунт.'
+    return 'Ссылку YouTube нельзя импортировать напрямую. Откройте YouTube Music в плитке ниже и войдите в аккаунт.'
   }
   if (info.provider === 'apple') return 'Apple Music не поддерживается.'
   if (info.kind === 'artist' || info.kind === 'profile') {

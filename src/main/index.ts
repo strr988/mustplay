@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { randomInt } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,13 +7,13 @@ import type { IpcMainInvokeEvent, WebContents, WebPreferences } from 'electron'
 import { builtInCursors, channels, interfaceScales, isSoundEffect, maxWavePulse, playerOrigin, playerScheme, playlistNameLimit, themeBackground, waveModes } from '../shared/contracts'
 import type { ImportResult, InterfaceScale, RescanResult, WaveMode } from '../shared/contracts'
 import { webSourceProviders } from '../shared/pipeline'
-import type { PipelineSettings, WebSourceBounds, WebSourceProvider } from '../shared/pipeline'
+import type { PipelineJob, PipelineJobView, PipelinePreferences, PipelineSettings, WebSourceBounds, WebSourceProvider } from '../shared/pipeline'
 import { buildCommit, buildVersion } from '../shared/build-info'
-import { defaultSettings, PipelineService } from '../pipeline/service'
+import { builtInAcoustidKey, defaultSettings, PipelineService } from '../pipeline/service'
 import { ToolManager } from '../pipeline/tools'
 import { waitForSpotifyCallback } from '../pipeline/spotify-auth'
 import { WebSourceManager, setWebSourceYtDlpResolver } from './web-source'
-import { hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
+import { currentTheme, hasTitleBarOverlay, titleBarColors, windowChrome } from './window-chrome'
 import { Library } from './library'
 import { readCursorPreset } from './cursor-presets'
 import { serveMedia } from './media'
@@ -22,7 +22,8 @@ import { validatePlaybackEvent, validatePreference } from './feedback-validation
 import { validatePlaybackSession } from './playback-session'
 import { registerPlayerExperience } from './player-experience'
 import { registerYandex } from './yandex-service'
-import { hasYandexToken, readYandexToken, writeYandexToken, yandexTokenHelpUrl } from './yandex-token'
+import { defaultDownloadFolder, downloadFolderStatus, requireDownloadFolder } from './download-folder'
+import { hasYandexToken, readYandexToken, writeYandexToken } from './yandex-token'
 import { resolveLibraryPath, resolveProfileDirectory } from './library-profile'
 import { explainWave, generateWave } from '../recommendations/engine'
 import type { RecommendationContext } from '../recommendations/engine'
@@ -48,6 +49,7 @@ let pendingRescan: Promise<RescanResult> | undefined
 let pipelineService: PipelineService | null = null
 let pipelineSettings: PipelineSettings = { ...defaultSettings }
 let pipelineSettingsPath: string | null = null
+let pendingPipelineSettings = Promise.resolve()
 const webSources = new WebSourceManager()
 
 function senderWindow(event: IpcMainInvokeEvent): BrowserWindow {
@@ -131,14 +133,17 @@ function registerIpc(library: Library): void {
         intensity < 0 || intensity > maxWavePulse) throw new Error('Invalid Wave pulse intensity')
     library.setWavePulse(intensity)
   })
+  ipcMain.handle(channels.getThemePreference, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected theme arguments')
+    return library.getTheme()
+  })
   ipcMain.handle(channels.setTheme, (event, ...args: unknown[]) => {
-    const player = senderWindow(event)
+    senderWindow(event)
     const [theme] = args
-    if (args.length !== 1 || (theme !== 'dark' && theme !== 'light')) throw new Error('Invalid theme')
+    if (args.length !== 1 || (theme !== 'dark' && theme !== 'light' && theme !== 'system')) throw new Error('Invalid theme')
     library.setTheme(theme)
     nativeTheme.themeSource = theme
-    player.setBackgroundColor(themeBackground[theme])
-    if (hasTitleBarOverlay) player.setTitleBarOverlay(titleBarColors(theme))
   })
   ipcMain.handle(channels.getInterfaceScale, (event, ...args: unknown[]) => {
     senderWindow(event)
@@ -319,6 +324,13 @@ async function start(): Promise<void> {
   }
   const library = new Library(resolveLibraryPath(userData))
   nativeTheme.themeSource = library.getTheme()
+  nativeTheme.on('updated', () => {
+    const theme = currentTheme()
+    for (const player of BrowserWindow.getAllWindows()) {
+      player.setBackgroundColor(themeBackground[theme])
+      if (hasTitleBarOverlay) player.setTitleBarOverlay(titleBarColors(theme))
+    }
+  })
   const artwork = new Artwork(library)
   const yandex = registerYandex(library, () => window, senderWindow)
   app.once('will-quit', () => library.close())
@@ -329,6 +341,12 @@ async function start(): Promise<void> {
     const raw = await readFile(pipelineSettingsPath, 'utf8')
     const parsed = JSON.parse(raw) as Partial<PipelineSettings>
     pipelineSettings = { ...defaultSettings, ...parsed }
+    // Previous builds wrote the release key as if it were a user override.
+    if (typeof pipelineSettings.acoustidKey !== 'string' || pipelineSettings.acoustidKey.trim() === builtInAcoustidKey) {
+      pipelineSettings.acoustidKey = ''
+    }
+    if (typeof pipelineSettings.downloadDir !== 'string') pipelineSettings.downloadDir = ''
+    if (typeof pipelineSettings.yandexToken !== 'string') pipelineSettings.yandexToken = ''
   } catch {
     // First run: keep defaults.
   }
@@ -339,10 +357,10 @@ async function start(): Promise<void> {
     pipelineSettings.yandexToken = ''
     await savePipelineSettingsToDisk()
   }
-  // The first import should just work: the folder is created by the app and
-  // nobody has to configure paths or tools beforehand.
-  if (!pipelineSettings.downloadDir) pipelineSettings.downloadDir = join(app.getPath('music'), 'mustplay')
-  await mkdir(pipelineSettings.downloadDir, { recursive: true }).catch(() => {})
+  // Allow fresh Windows profiles where the known folder has yet to be created.
+  if (!pipelineSettings.downloadDir || !library.getYandexFolder()) {
+    await mkdir(defaultDownloadFolder(), { recursive: true }).catch(() => {})
+  }
   // Access tokens live in memory only, so a previous session cannot stay "connected".
   pipelineSettings.spotifyConnected = false
   const toolManager = new ToolManager(join(userData, 'tools'))
@@ -426,14 +444,14 @@ async function start(): Promise<void> {
 
   async function createWindow(): Promise<void> {
     const player = new BrowserWindow({
-      ...windowChrome(library.getTheme()),
+      ...windowChrome(currentTheme()),
       width: 1100,
       height: 760,
       minWidth: 620,
       minHeight: 520,
       title: 'mustplay',
       icon: appIcon,
-      backgroundColor: themeBackground[library.getTheme()],
+      backgroundColor: themeBackground[currentTheme()],
       autoHideMenuBar: true,
       webPreferences: {
         ...preferences,
@@ -468,25 +486,48 @@ async function start(): Promise<void> {
   })
 }
 
-async function savePipelineSettingsToDisk(): Promise<void> {
+async function savePipelineSettingsToDisk(settings = pipelineSettings): Promise<void> {
   if (!pipelineSettingsPath) throw new Error('Pipeline settings path is not initialized')
-  // The Yandex token is never written here: it lives in the encrypted profile store.
-  const persisted = { ...pipelineSettings, yandexToken: '' }
-  await writeFile(pipelineSettingsPath, JSON.stringify(persisted, null, 2), 'utf8')
+  const temporary = pipelineSettingsPath + '.tmp'
+  try {
+    await writeFile(temporary, JSON.stringify({ ...settings, yandexToken: '', spotifyConnected: false }, null, 2), 'utf8')
+    await rename(temporary, pipelineSettingsPath)
+  } catch {
+    await rm(temporary, { force: true }).catch(() => {})
+    throw new Error('Не удалось сохранить настройки импорта.')
+  }
 }
 
-/**
- * The renderer only learns whether a Yandex token exists. The token itself stays
- * in Main, so it cannot leak through a React state dump or a screenshot.
- */
-function publicPipelineSettings(): PipelineSettings {
-  return { ...pipelineSettings, yandexToken: '' }
+async function publicPipelineSettings(): Promise<PipelinePreferences> {
+  const { spotifyClientId, spotifyConnected, acoustidKey, downloadDir, workers, format } = pipelineSettings
+  return {
+    spotifyClientId, spotifyConnected, workers, format,
+    acoustidKeySource: acoustidKey.trim() ? 'custom' : 'built-in',
+    ...await downloadFolderStatus(downloadDir),
+  }
+}
+
+function updatePipelineSettings(update: () => PipelineSettings): Promise<void> {
+  const saved = pendingPipelineSettings.then(async () => {
+    const next = update()
+    await savePipelineSettingsToDisk(next)
+    pipelineSettings = { ...next, spotifyConnected: pipelineSettings.spotifyConnected }
+  })
+  pendingPipelineSettings = saved.catch(() => {})
+  return saved
 }
 
 function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSettings {
   const next = { ...pipelineSettings, yandexToken: '' }
   if (typeof patch.spotifyClientId === 'string') next.spotifyClientId = patch.spotifyClientId.trim().slice(0, 200)
-  if (typeof patch.acoustidKey === 'string') next.acoustidKey = patch.acoustidKey.trim().slice(0, 200)
+  if ('acoustidKey' in patch) {
+    if (typeof patch.acoustidKey !== 'string' || patch.acoustidKey.trim().length > 200 ||
+        /[\u0000-\u001f\u007f]/.test(patch.acoustidKey)) {
+      throw new Error('Укажите ключ AcoustID длиной до 200 символов.')
+    }
+    const key = patch.acoustidKey.trim()
+    next.acoustidKey = key === builtInAcoustidKey ? '' : key
+  }
   if (typeof patch.workers === 'number' && Number.isFinite(patch.workers)) {
     next.workers = Math.min(5, Math.max(1, Math.round(patch.workers)))
   }
@@ -495,8 +536,16 @@ function normalizePipelineSettings(patch: Record<string, unknown>): PipelineSett
 }
 
 /** Settings for an import run, with the token read fresh from the single store. */
-function pipelineRunSettings(library: Library): PipelineSettings {
-  return { ...pipelineSettings, yandexToken: readYandexToken(library) ?? '' }
+async function pipelineRunSettings(library: Library): Promise<PipelineSettings> {
+  const settings = pipelineSettings
+  return {
+    ...settings, downloadDir: await requireDownloadFolder(settings.downloadDir),
+    yandexToken: readYandexToken(library) ?? '',
+  }
+}
+
+function pipelineJobView(job: PipelineJob): PipelineJobView {
+  return { ...job, items: job.items.map(({ filePath: _filePath, ...item }) => item) }
 }
 
 function registerPipelineIpc(library: Library): void {
@@ -505,48 +554,44 @@ function registerPipelineIpc(library: Library): void {
 
   ipcMain.handle(channels.getPipelineStatus, async (event) => {
     senderWindow(event)
-    const tools = await service.toolsStatus()
+    const [tools, settings] = await Promise.all([service.toolsStatus(), publicPipelineSettings()])
+    const job = service.currentJob()
     return {
-      settings: publicPipelineSettings(),
-      yandexTokenSaved: hasYandexToken(library),
+      settings,
       tools,
-      job: service.currentJob() ?? null,
-      version: buildVersion,
-      build: buildCommit,
+      job: job ? pipelineJobView(job) : null,
     }
   })
 
   ipcMain.handle(channels.savePipelineSettings, async (event, patch: unknown) => {
     senderWindow(event)
-    if (!patch || typeof patch !== 'object') throw new Error('Invalid pipeline settings')
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Invalid pipeline settings')
     const input = patch as Record<string, unknown>
-    // An empty string is the explicit "forget token" action; nothing else
-    // touches the encrypted store.
-    if (typeof input.yandexToken === 'string') {
-      writeYandexToken(library, input.yandexToken.slice(0, 4000))
-    }
-    pipelineSettings = normalizePipelineSettings(input)
-    await savePipelineSettingsToDisk()
+    await updatePipelineSettings(() => normalizePipelineSettings(input))
     return publicPipelineSettings()
   })
 
   ipcMain.handle(channels.choosePipelineFolder, async (event) => {
     const owner = senderWindow(event)
-    const result = await dialog.showOpenDialog(owner, { title: 'Папка для загруженного аудио', properties: ['openDirectory'] })
+    const result = await dialog.showOpenDialog(owner, { title: 'Папка для импорта плейлистов', defaultPath: pipelineSettings.downloadDir || defaultDownloadFolder(),
+      properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || !result.filePaths[0]) return null
-    pipelineSettings.downloadDir = result.filePaths[0]
-    await savePipelineSettingsToDisk()
+    const folder = result.filePaths[0]
+    await requireDownloadFolder(folder)
+    await updatePipelineSettings(() => ({ ...pipelineSettings, downloadDir: folder }))
+    return publicPipelineSettings()
+  })
+
+  ipcMain.handle(channels.resetPipelineFolder, async (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length) throw new Error('Unexpected folder arguments')
+    await updatePipelineSettings(() => ({ ...pipelineSettings, downloadDir: '' }))
     return publicPipelineSettings()
   })
 
   ipcMain.handle(channels.installPipelineTools, async (event) => {
     senderWindow(event)
     return await service.installTools()
-  })
-
-  ipcMain.handle(channels.openYandexTokenHelp, async (event) => {
-    senderWindow(event)
-    await shell.openExternal(yandexTokenHelpUrl)
   })
 
   ipcMain.handle(channels.connectPipelineSpotify, async (event) => {
@@ -558,7 +603,6 @@ function registerPipelineIpc(library: Library): void {
       if (!callback) return
       const ok = await service.spotifyExchangeCode(clientId, callback.code, callback.state)
       pipelineSettings.spotifyConnected = ok
-      await savePipelineSettingsToDisk()
     }).catch(() => {})
     await shell.openExternal(url)
     return { url }
@@ -570,7 +614,6 @@ function registerPipelineIpc(library: Library): void {
     const clientId = typeof pipelineSettings.spotifyClientId === 'string' ? pipelineSettings.spotifyClientId : ''
     const ok = await service.spotifyExchangeCode(clientId, code, state)
     pipelineSettings.spotifyConnected = ok
-    await savePipelineSettingsToDisk()
     return ok
   })
 
@@ -578,20 +621,20 @@ function registerPipelineIpc(library: Library): void {
     senderWindow(event)
     service.spotifyDisconnect()
     pipelineSettings.spotifyConnected = false
-    await savePipelineSettingsToDisk()
   })
 
   ipcMain.handle(channels.startPipelineImport, async (event, url: unknown) => {
     senderWindow(event)
     if (typeof url !== 'string' || !url.trim()) throw new Error('Укажите ссылку на плейлист')
-    const job = await service.startPipelineImport(url.trim(), pipelineRunSettings(library), pipelineSettings.workers)
-    return job
+    const settings = await pipelineRunSettings(library)
+    return pipelineJobView(await service.startPipelineImport(url.trim(), settings, settings.workers))
   })
 
   ipcMain.handle(channels.getPipelineJob, async (event, id: unknown) => {
     senderWindow(event)
     if (typeof id !== 'string') throw new Error('Некорректный ID задания')
-    return service.getPipelineJob(id)
+    const job = service.getPipelineJob(id)
+    return job ? pipelineJobView(job) : null
   })
 
   ipcMain.handle(channels.cancelPipelineImport, async (event) => {
@@ -607,18 +650,20 @@ function registerPipelineIpc(library: Library): void {
   ipcMain.handle(channels.retryPipelineItem, async (event, jobId: unknown, itemId: unknown) => {
     senderWindow(event)
     if (typeof jobId !== 'string' || typeof itemId !== 'string') throw new Error('Некорректный трек для повтора')
-    return await service.retryPipelineItem(jobId, itemId, pipelineRunSettings(library), pipelineSettings.workers)
+    const settings = await pipelineRunSettings(library)
+    return pipelineJobView(await service.retryPipelineItem(jobId, itemId, settings, settings.workers))
   })
 
   ipcMain.handle(channels.skipPipelineItem, (event, jobId: unknown, itemId: unknown) => {
     senderWindow(event)
     if (typeof jobId !== 'string' || typeof itemId !== 'string') throw new Error('Некорректный трек')
-    return service.skipPipelineItem(jobId, itemId)
+    return pipelineJobView(service.skipPipelineItem(jobId, itemId))
   })
 
   ipcMain.handle(channels.openPipelineFolder, async (event) => {
     senderWindow(event)
-    if (pipelineSettings.downloadDir) await shell.openPath(pipelineSettings.downloadDir)
+    const folder = await requireDownloadFolder(pipelineSettings.downloadDir)
+    if (await shell.openPath(folder)) throw new Error('Не удалось открыть папку загрузок.')
   })
 
   ipcMain.handle(channels.openWebSource, (event, provider: unknown) => {
@@ -651,7 +696,8 @@ function registerPipelineIpc(library: Library): void {
     // before the user is told to open a playlist.
     await service.ensureTools()
     const source = await webSources.importPlaylist()
-    return await service.startWebSourceImport(source, pipelineRunSettings(library), pipelineSettings.workers)
+    const settings = await pipelineRunSettings(library)
+    return pipelineJobView(await service.startWebSourceImport(source, settings, settings.workers))
   })
 
   ipcMain.handle(channels.clearWebSourceData, async (event) => {

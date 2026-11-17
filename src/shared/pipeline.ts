@@ -8,7 +8,7 @@ export const pipelineProviderLabels: Record<PipelineProvider, string> = {
   yandex: 'Яндекс Музыка',
   vk: 'ВК Музыка',
   soundcloud: 'SoundCloud',
-  ytmusic: 'YT Music',
+  ytmusic: 'YouTube Music',
 }
 
 export interface PipelineTrackInput {
@@ -78,6 +78,9 @@ export interface PipelineJob {
   items: PipelineItem[]
 }
 
+export type PipelineItemView = Omit<PipelineItem, 'filePath'>
+export type PipelineJobView = Omit<PipelineJob, 'items'> & { items: PipelineItemView[] }
+
 export interface PipelineJobSummary {
   id: string
   provider: PipelineProvider
@@ -94,10 +97,6 @@ export type PipelineDownloadFormat = 'm4a' | 'original'
 export interface PipelineSettings {
   spotifyClientId: string
   acoustidKey: string
-  /**
-   * Yandex Music OAuth token. It is a credential, so the renderer only ever
-   * receives an empty string plus `PipelineStatus.yandexTokenSaved`.
-   */
   yandexToken: string
   downloadDir: string
   workers: number
@@ -105,7 +104,18 @@ export interface PipelineSettings {
   spotifyConnected: boolean
 }
 
-export type PipelineSettingsPatch = Partial<Omit<PipelineSettings, 'downloadDir' | 'spotifyConnected'>>
+export interface PipelinePreferences {
+  spotifyClientId: string
+  spotifyConnected: boolean
+  acoustidKeySource: 'built-in' | 'custom'
+  folderLabel: string
+  folderAvailable: boolean
+  usesDefaultFolder: boolean
+  workers: number
+  format: PipelineDownloadFormat
+}
+
+export type PipelineSettingsPatch = Partial<Pick<PipelineSettings, 'spotifyClientId' | 'acoustidKey' | 'format' | 'workers'>>
 
 export interface PipelineToolState {
   name: string
@@ -119,14 +129,9 @@ export interface PipelineTools {
 }
 
 export interface PipelineStatus {
-  settings: PipelineSettings
-  /** Whether a Yandex Music token is stored; the token itself stays in Main. */
-  yandexTokenSaved: boolean
+  settings: PipelinePreferences
   tools: PipelineTools
-  job: PipelineJob | null
-  /** Build stamp, so a stale bundle is visible in the interface. */
-  version: string
-  build: string
+  job: PipelineJobView | null
 }
 
 export interface AudioCandidate {
@@ -152,13 +157,6 @@ export const pipelineVerificationRate = { requests: 3, perSeconds: 1 } as const
 export const pipelineMetadataRate = { requests: 1, perSeconds: 1 } as const
 export const pipelineDeezerRate = { requests: 5, perSeconds: 1 } as const
 export const pipelineSpotifyRate = { requests: 5, perSeconds: 1 } as const
-
-/**
- * AcoustID application keys are public by design: they identify the app, not
- * the user. This shared key keeps the first import working without sign-up;
- * anyone can paste a personal key in the advanced settings instead.
- */
-export const builtInAcoustidKey = 'Dm8hohLsF5'
 
 /** Providers that read the track list from the user's own browser session. */
 export const webSourceProviders = ['ytmusic', 'yandex', 'vk', 'soundcloud'] as const

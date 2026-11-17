@@ -1,8 +1,6 @@
 /**
  * Build stamp. The version and commit are injected by electron-vite at build
- * time; `dev` means the bundle was produced outside a git checkout. The import
- * tab shows both so a stale build can be spotted before debugging the wrong
- * binary. `app.getVersion()` cannot be used for this: in a dev launch it
+ * time; `dev` means the bundle was produced outside a git checkout. The About section shows both. `app.getVersion()` cannot be used for this: in a dev launch it
  * reports Electron's version, not the application's.
  */
 declare const __BUILD_COMMIT__: string | undefined

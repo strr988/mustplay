@@ -44,7 +44,7 @@ it('migrates an existing v1 library, retaining IDs, likes, cancellation and hist
   expect(() => store!.setTrackPreference(randomUUID(), true)).toThrow()
   expect(() => store!.recordPlaybackEvent({ ...started, trackId: randomUUID() })).toThrow(/mismatch/)
   using db = new DatabaseSync(path)
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
 })
 

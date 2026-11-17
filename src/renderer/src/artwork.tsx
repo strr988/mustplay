@@ -6,11 +6,17 @@ const observer = new IntersectionObserver(entries => {
   for (const { target, isIntersecting } of entries) visibilityListeners.get(target)?.(isIntersecting)
 })
 
-export function Artwork({ url, eager = false, onLoad }: {
+type ArtworkProps = {
   url: string | null
   eager?: boolean
   onLoad?: (image: HTMLImageElement) => void
-}) {
+}
+
+export function Artwork(props: ArtworkProps) {
+  return <ArtworkImage key={props.url} {...props} />
+}
+
+function ArtworkImage({ url, eager = false, onLoad }: ArtworkProps) {
   const [failed, setFailed] = useState(false)
   const [visible, setVisible] = useState(false)
   const observe = useCallback((element: HTMLSpanElement | null) => {

@@ -5,6 +5,7 @@ import type { YandexLyricsFormat, YandexQuality, YandexSearchResult, YandexSetti
 import { fullTitle, YandexApi, YandexError } from './yandex-api'
 import { YandexCoverProxy } from './yandex-cover'
 import { YandexDownloads } from './yandex-downloads'
+import { defaultDownloadFolder, downloadFolderStatus, requireDownloadFolder } from './download-folder'
 import { readYandexToken, writeYandexToken, yandexTokenPage } from './yandex-token'
 import type { Library } from './library'
 
@@ -45,6 +46,13 @@ export function registerYandex(
     writeYandexToken(library, token)
   }
 
+  async function getSettings(): Promise<YandexSettings> {
+    return {
+      ...library.getYandexSettings(), hasToken: !!readToken(),
+      ...await downloadFolderStatus(library.getYandexFolder()),
+    }
+  }
+
   function requireToken(): string {
     const token = readToken()
     if (!token) throw new Error('Сначала укажите токен Яндекс Музыки')
@@ -61,11 +69,15 @@ export function registerYandex(
   ipcMain.handle(channels.getYandexSettings, (event, ...args: unknown[]) => {
     mainSender(event)
     if (args.length) throw new Error('Unexpected Yandex settings arguments')
-    return library.getYandexSettings()
+    return getSettings()
   })
   ipcMain.handle(channels.setYandexToken, async (event, ...args: unknown[]) => {
     mainSender(event)
     if (args.length !== 1) throw new Error('Invalid Yandex token arguments')
+    if (args[0] === '') {
+      writeToken('')
+      return getSettings()
+    }
     const token = plainText(args[0], 512)
     try {
       await new YandexApi(token).verify()
@@ -75,7 +87,7 @@ export function registerYandex(
       }
     }
     writeToken(token)
-    return library.getYandexSettings()
+    return getSettings()
   })
   ipcMain.handle(channels.setYandexQuality, (event, ...args: unknown[]) => {
     mainSender(event)
@@ -99,10 +111,19 @@ export function registerYandex(
     const owner = mainSender(event)
     if (args.length) throw new Error('Unexpected Yandex folder arguments')
     const selection = await dialog.showOpenDialog(owner, {
-      title: 'Папка для загрузок Яндекс Музыки', properties: ['openDirectory', 'createDirectory'],
+      title: 'Папка для загрузок Яндекс Музыки', defaultPath: library.getYandexFolder() || defaultDownloadFolder(), properties: ['openDirectory', 'createDirectory'],
     })
-    if (!selection.canceled && selection.filePaths[0]) library.setYandexFolder(selection.filePaths[0])
-    return library.getYandexSettings()
+    if (!selection.canceled && selection.filePaths[0]) {
+      await requireDownloadFolder(selection.filePaths[0])
+      library.setYandexFolder(selection.filePaths[0])
+    }
+    return getSettings()
+  })
+  ipcMain.handle(channels.resetYandexFolder, (event, ...args: unknown[]) => {
+    mainSender(event)
+    if (args.length) throw new Error('Unexpected Yandex folder arguments')
+    library.setYandexFolder(null)
+    return getSettings()
   })
   ipcMain.handle(channels.openYandexTokenPage, async (event, ...args: unknown[]) => {
     mainSender(event)
@@ -133,13 +154,12 @@ export function registerYandex(
     const search: YandexSearchResult = { tracks: result, total, page, perPage }
     return search
   })
-  ipcMain.handle(channels.yandexDownload, (event, ...args: unknown[]) => {
+  ipcMain.handle(channels.yandexDownload, async (event, ...args: unknown[]) => {
     mainSender(event)
     if (args.length !== 1) throw new Error('Invalid Yandex download arguments')
     const id = trackId(args[0])
     const token = requireToken()
-    const folder = library.getYandexFolder()
-    if (!folder) throw new Error('Сначала выберите папку для загрузок')
+    const folder = await requireDownloadFolder(library.getYandexFolder())
     const settings = library.getYandexSettings()
     const meta = recent.get(id)
     return downloads.enqueue(id, {

@@ -9,10 +9,8 @@ import type { Library } from './library'
  * is available and never leaves Main: the interface only learns whether a
  * token exists.
  */
-export const yandexTokenHelpUrl = 'https://ym-token.marshal.dev/'
-
-/** The helper is a third-party service, so the interface warns about it. */
-export const yandexTokenPage = yandexTokenHelpUrl
+// The settings page identifies this as a third-party service.
+export const yandexTokenPage = 'https://ym-token.marshal.dev/'
 
 export function readYandexToken(library: Library): string | null {
   const { token, tokenEncrypted } = library.getYandexTokenBlob()

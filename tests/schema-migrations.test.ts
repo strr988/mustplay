@@ -49,7 +49,7 @@ it('upgrades a 0.9.0 library and keeps its Yandex settings', () => {
 
   using db = new DatabaseSync(path)
   expect(tables(db)).toEqual(expect.arrayContaining(['isrc_cache', 'pipeline_jobs', 'yandex_settings']))
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
 })
 
 it('upgrades a 0.10.0 library and adds the Yandex defaults once', () => {
@@ -73,7 +73,7 @@ it('upgrades a 0.10.0 library and adds the Yandex defaults once', () => {
   using db = new DatabaseSync(path)
   // The cache table of the pipeline line survives, and its row is untouched.
   expect(db.prepare('SELECT isrc FROM isrc_cache').get()).toEqual({ isrc: 'USRC17607839' })
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
 })
 
 it('records every applied migration by name and does not repeat itself', async () => {
@@ -82,18 +82,43 @@ it('records every applied migration by name and does not repeat itself', async (
   {
     using db = new DatabaseSync(path)
     const names = recorded(db)
-    expect(names).toHaveLength(15)
+    expect(names).toHaveLength(16)
     expect(names).toEqual(expect.arrayContaining([
-      'tracks-and-sources', 'audio-formats', 'isrc-fingerprint-cache', 'pipeline-jobs', 'yandex-settings',
+      'tracks-and-sources', 'audio-formats', 'isrc-fingerprint-cache', 'pipeline-jobs', 'yandex-settings', 'system-theme',
     ]))
-    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
+    expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
   }
 
   // A second open must not migrate, so it neither adds rows nor writes a backup.
   new LibraryStore(path).close()
   {
     using db = new DatabaseSync(path)
-    expect(recorded(db)).toHaveLength(15)
+    expect(recorded(db)).toHaveLength(16)
   }
   expect((await readdir(folder)).filter(file => file.endsWith('.backup'))).toEqual([])
+})
+
+it('preserves the 0.11.0 theme on upgrade and remembers system mode', () => {
+  const path = join(folder, 'library.sqlite3')
+  new LibraryStore(path).close()
+  {
+    using db = new DatabaseSync(path)
+    db.exec("DELETE FROM schema_migrations WHERE name = 'system-theme'; PRAGMA user_version = 15")
+    db.exec(`ALTER TABLE appearance_settings DROP COLUMN theme;
+      ALTER TABLE appearance_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('dark', 'light'));
+      UPDATE appearance_settings SET theme = 'light';`)
+  }
+  const migrated = new LibraryStore(path)
+  try {
+    expect(migrated.getTheme()).toBe('light')
+    migrated.setTheme('system')
+  } finally {
+    migrated.close()
+  }
+  const reopened = new LibraryStore(path)
+  try {
+    expect(reopened.getTheme()).toBe('system')
+  } finally {
+    reopened.close()
+  }
 })

@@ -1,18 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { yandexLyricsFormats, yandexQualities } from '../../shared/contracts'
-import type { YandexDownload, YandexLyricsFormat, YandexQuality, YandexSearchResult, YandexSettings, YandexTrack } from '../../shared/contracts'
+import type { YandexDownload, YandexSearchResult, YandexSettings, YandexTrack } from '../../shared/contracts'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
 import { Icon, IconButton } from './icons'
 import { formatTime } from './playback'
 
-const qualityLabels: Record<YandexQuality, string> = {
-  lq: 'Экономное (MP3/AAC)', nq: 'Высокое (MP3/AAC 320)', lossless: 'Lossless (FLAC)',
-}
-const lyricsLabels: Record<YandexLyricsFormat, string> = {
-  none: 'Не сохранять', text: 'Текст в тегах', lrc: 'Синхронный .lrc',
-}
 const statusLabels: Record<YandexDownload['status'], string> = {
   queued: 'В очереди', downloading: 'Загрузка', tagging: 'Теги', complete: 'Готово', error: 'Ошибка', cancelled: 'Отменено',
 }
@@ -28,7 +21,10 @@ type SearchState =
   | { status: 'done'; query: string; result: YandexSearchResult }
   | { status: 'error'; query: string; message: string }
 
-export function Search() {
+export function Search({ active, openSettings }: {
+  active: boolean
+  openSettings: (target: 'sources' | 'files') => void
+}) {
   const [settings, setSettings] = useState<YandexSettings | null>(null)
   const [settingsError, setSettingsError] = useState(false)
   const [downloads, setDownloads] = useState<YandexDownload[]>([])
@@ -38,9 +34,16 @@ export function Search() {
   const searchRevision = useRef(0)
 
   useEffect(() => {
+    if (!active) return
+    let current = true
+    void window.mustplay.getYandexSettings().then(value => {
+      if (current) { setSettings(value); setSettingsError(false) }
+    }).catch(() => { if (current) setSettingsError(true) })
+    return () => { current = false }
+  }, [active])
+
+  useEffect(() => {
     let active = true
-    void window.mustplay.getYandexSettings().then(value => { if (active) setSettings(value) })
-      .catch(() => { if (active) setSettingsError(true) })
     void window.mustplay.getYandexDownloads().then(value => { if (active) setDownloads(value) }).catch(() => undefined)
     const unsubscribe = window.mustplay.onYandexDownloads(value => { if (active) setDownloads(value) })
     return () => { active = false; unsubscribe() }
@@ -52,8 +55,8 @@ export function Search() {
     return map
   }, [downloads])
 
-  const ready = !!settings?.hasToken
-  const canDownload = ready && settings?.folderLabel !== null
+  const ready = !settingsError && !!settings?.hasToken
+  const canDownload = ready && !!settings?.folderAvailable
 
   async function runSearch(text: string, page: number): Promise<void> {
     const revision = ++searchRevision.current
@@ -80,6 +83,7 @@ export function Search() {
       await window.mustplay.yandexDownload(track.id)
     } catch (error) {
       setActionError(errorMessage(error, 'Не удалось начать загрузку.'))
+      void window.mustplay.getYandexSettings().then(setSettings).catch(() => {})
     }
   }
 
@@ -97,7 +101,6 @@ export function Search() {
         <p className="muted">Найдите треки в Яндекс Музыке и сохраните их в свою папку.</p>
       </div>
     </header>
-    <YandexSettingsCard settings={settings} error={settingsError} onSettings={setSettings} />
     <form className="yandex-search" onSubmit={submitSearch}>
       <label className="search-control">
         <Icon name="search" />
@@ -108,15 +111,25 @@ export function Search() {
         <Icon name="search" />{search.status === 'loading' ? 'Ищем…' : 'Найти'}
       </button>
     </form>
-    {!ready && !settingsError && settings && <p className="notice" role="status">Укажите токен Яндекс Музыки выше, чтобы искать и скачивать треки.</p>}
+    {settingsError && <p className="notice" role="alert">Не удалось загрузить параметры поиска.</p>}
+    {!settings && !settingsError && <p className="muted" role="status">Проверяем подключение…</p>}
+    {settings && !settingsError && (!ready || !canDownload) && <div className="settings-card service-notice">
+      <p>{!ready ? 'Подключите Яндекс Музыку, чтобы искать треки.' : 'Папка загрузок недоступна.'}</p>
+      <button type="button" className="secondary" onClick={() => openSettings(ready ? 'files' : 'sources')}>
+        {!ready ? 'Подключить в настройках' : 'Выбрать папку в настройках'}
+      </button>
+    </div>}
     {actionError && <p className="notice" role="alert">{actionError}</p>}
     {search.status === 'loading' && <p className="notice" role="status">Ищем треки…</p>}
     {search.status === 'error' && <EmptyState icon="search" title="Поиск не удался"
-      action={<button type="button" className="secondary" onClick={() => void runSearch(search.query, 0)}>Повторить</button>}>
+      action={<div className="settings-actions">
+        <button type="button" className="secondary" disabled={!ready} onClick={() => void runSearch(search.query, 0)}>Повторить</button>
+        <button type="button" className="text-button" onClick={() => openSettings('sources')}>Настройки подключения</button>
+      </div>}>
       {search.message}
     </EmptyState>}
-    {search.status === 'idle' && <EmptyState icon="search" title="Найдите музыку">
-      Введите название трека или исполнителя. Загруженные файлы появятся в выбранной папке — добавьте её в библиотеку, чтобы слушать.
+    {ready && search.status === 'idle' && <EmptyState icon="search" title="Найдите музыку">
+      Начните с названия трека или имени исполнителя.
     </EmptyState>}
     {result && (result.tracks.length === 0 ? <EmptyState icon="search" title="Треки не найдены">
       Попробуйте другой запрос.
@@ -154,107 +167,6 @@ export function Search() {
   </section>
 }
 
-function YandexSettingsCard({ settings, error, onSettings }: {
-  settings: YandexSettings | null
-  error: boolean
-  onSettings: (settings: YandexSettings) => void
-}) {
-  const [token, setToken] = useState('')
-  const [savingToken, setSavingToken] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
-
-  async function saveToken() {
-    const value = token.trim()
-    if (!value || savingToken) return
-    setSavingToken(true)
-    setMessage('')
-    try {
-      onSettings(await window.mustplay.setYandexToken(value))
-      setToken('')
-    } catch (failure) {
-      setMessage(errorMessage(failure, 'Не удалось сохранить токен.'))
-    } finally {
-      setSavingToken(false)
-    }
-  }
-
-  async function update(action: () => Promise<unknown>, next: YandexSettings) {
-    if (busy || !settings) return
-    setBusy(true)
-    setMessage('')
-    try {
-      await action()
-      onSettings(next)
-    } catch (failure) {
-      setMessage(errorMessage(failure, 'Не удалось сохранить настройку.'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function chooseFolder() {
-    if (busy) return
-    setBusy(true)
-    setMessage('')
-    try {
-      onSettings(await window.mustplay.chooseYandexFolder())
-    } catch (failure) {
-      setMessage(errorMessage(failure, 'Не удалось выбрать папку.'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return <details className="settings-card yandex-settings" open={!settings?.hasToken}>
-    <summary>Подключение к Яндекс Музыке{settings?.hasToken ? ' · подключено' : ''}</summary>
-    {error ? <p role="alert">Не удалось загрузить настройки Яндекс Музыки.</p> :
-      !settings ? <p className="muted" role="status">Загружаем настройки…</p> : <>
-        <p className="muted">Загружайте треки только для личного использования при активной подписке Яндекс Музыки и соблюдайте условия сервиса.</p>
-        <div className="settings-option">
-          <span>Токен</span>
-          <span className="muted">{settings.hasToken ? 'Сохранён в профиле' : 'Не указан'}</span>
-        </div>
-        <form className="yandex-token" onSubmit={event => { event.preventDefault(); void saveToken() }}>
-          <input className="settings-input" type="password" aria-label="Токен Яндекс Музыки" autoComplete="off"
-            placeholder="Вставьте токен" value={token} onChange={event => setToken(event.currentTarget.value)} disabled={savingToken} />
-          <button type="submit" className="secondary" disabled={savingToken || !token.trim()}>{savingToken ? 'Проверяем…' : 'Сохранить'}</button>
-          <button type="button" className="text-button" disabled={savingToken}
-            onClick={() => void window.mustplay.openYandexTokenPage().catch(() => setMessage('Не удалось открыть страницу токена.'))}>Получить токен</button>
-        </form>
-        <label className="settings-option">
-          <span>Качество</span>
-          <select className="settings-input player-select" aria-label="Качество загрузки" value={settings.quality} disabled={busy}
-            onChange={event => { const quality = event.currentTarget.value as YandexQuality; void update(() => window.mustplay.setYandexQuality(quality), { ...settings, quality }) }}>
-            {yandexQualities.map(value => <option key={value} value={value}>{qualityLabels[value]}</option>)}
-          </select>
-        </label>
-        <label className="settings-option">
-          <span>Текст песни</span>
-          <select className="settings-input player-select" aria-label="Формат текста песни" value={settings.lyrics} disabled={busy}
-            onChange={event => { const lyrics = event.currentTarget.value as YandexLyricsFormat; void update(() => window.mustplay.setYandexLyrics(lyrics), { ...settings, lyrics }) }}>
-            {yandexLyricsFormats.map(value => <option key={value} value={value}>{lyricsLabels[value]}</option>)}
-          </select>
-        </label>
-        <label className="settings-option">
-          <span>Встраивать обложку в файл</span>
-          <input type="checkbox" aria-label="Встраивать обложку в файл" checked={settings.embedCover} disabled={busy}
-            onChange={event => { const embedCover = event.currentTarget.checked; void update(() => window.mustplay.setYandexEmbedCover(embedCover), { ...settings, embedCover }) }} />
-        </label>
-        <div className="settings-option">
-          <span>Папка загрузок</span>
-          <span className="muted truncate" title={settings.folderLabel ?? undefined}>{settings.folderLabel ?? 'Не выбрана'}</span>
-        </div>
-        <div className="settings-actions">
-          <button type="button" className="secondary" disabled={busy} onClick={() => void chooseFolder()}>
-            <Icon name="folder" />Выбрать папку
-          </button>
-        </div>
-        {message && <p role="alert">{message}</p>}
-      </>}
-  </details>
-}
-
 function DownloadAction({ track, job, canDownload, onDownload, onCancel }: {
   track: YandexTrack
   job: YandexDownload | undefined
@@ -275,7 +187,7 @@ function DownloadAction({ track, job, canDownload, onDownload, onCancel }: {
       {job.error ?? 'Не удалось скачать трек'}
     </span>}
     <IconButton icon="download" label={(job?.status === 'error' ? 'Повторить: ' : 'Скачать: ') + track.title}
-      title={canDownload ? (job?.status === 'error' ? 'Повторить загрузку' : 'Скачать') : 'Укажите токен и папку загрузок'}
+      title={canDownload ? (job?.status === 'error' ? 'Повторить загрузку' : 'Скачать') : 'Проверьте подключение и папку загрузок в настройках'}
       disabled={!canDownload} onClick={onDownload} />
   </div>
 }

@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode, RefObject } from 'react'
 import { Artwork } from './artwork'
 import { IconButton, LikeButton } from './icons'
-import { LyricsPanel } from './lyrics-panel'
+import { LyricsPanel, type LyricsResult } from './lyrics-panel'
 import { TransportControls } from './player'
 import type { usePlayback } from './playback'
 import { QueuePanel } from './queue-panel'
@@ -43,6 +43,8 @@ type FullPlayerControls = {
   toggleLike: () => void
   close: () => void
   openMini: () => void
+  lyrics: LyricsResult
+  startWithLyrics: boolean
   discoLayer: ReactNode
   disco: ReturnType<typeof useDiscoMode>
 }
@@ -60,8 +62,8 @@ export function FullPlayer({ dialog, open, ...controls }: FullPlayerControls & {
   </dialog>
 }
 
-function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer, disco }: FullPlayerControls) {
-  const [lyricsOpen, setLyricsOpen] = useState(false)
+function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLike, close, openMini, discoLayer, disco, lyrics, startWithLyrics }: FullPlayerControls) {
+  const [lyricsOpen, setLyricsOpen] = useState(startWithLyrics)
   const [queueOpen, setQueueOpen] = useState(false)
   const side = queueOpen ? 'queue' : lyricsOpen ? 'lyrics' : null
   const [tint, setTint] = useState<{ url: string; color: string }>()
@@ -107,7 +109,7 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
             <TransportControls playback={playback} hasTracks={hasTracks} />
             <div className="full-cover-actions">
               <IconButton icon="more" label="Дополнительно" popoverTarget="full-player-menu" aria-controls="full-player-menu" />
-              <IconButton icon="lyrics" label="Текстомузыка" aria-pressed={side === 'lyrics'}
+              <IconButton icon="lyrics" label="Текстомузыка" aria-pressed={side === 'lyrics'} aria-controls="full-player-lyrics"
                 onClick={() => {
                   setLyricsOpen(side !== 'lyrics')
                   setQueueOpen(false)
@@ -126,7 +128,7 @@ function FullPlayerContent({ playback, hasTracks, liked, likeDisabled, toggleLik
         {playback.error && <p className="muted" role="alert">{playback.error}</p>}
       </div>
       {lyricsOpen && <div className="full-player-side" hidden={queueOpen}>
-        <LyricsPanel key={JSON.stringify([track?.id, url, track?.available])} track={track} active={!queueOpen} compact
+        <LyricsPanel key={JSON.stringify([track?.id, url, track?.available])} track={track} result={lyrics} active={!queueOpen}
           audio={playback.audioProps.ref} canSeek={playback.duration !== null && !loading} seek={playback.seek}
           mode="sync" />
       </div>}

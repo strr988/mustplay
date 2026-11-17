@@ -5,7 +5,7 @@ import type { MiniPlayback, MiniState, PlaybackCommand, ShortcutAction } from '.
 import type { Library } from './library'
 import { readTrackLyrics } from './lyrics'
 import { Shortcuts } from './shortcuts'
-import { windowChrome } from './window-chrome'
+import { currentTheme, windowChrome } from './window-chrome'
 
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const artworkPrefix = playerOrigin + '/artwork/'
@@ -117,10 +117,10 @@ export function registerPlayerExperience(
     miniCursor = library.getCursorSettings().selected
     const zoomFactor = library.getInterfaceScale() / 100
     const compact = new BrowserWindow({
-      ...windowChrome(library.getTheme()),
+      ...windowChrome(currentTheme()),
       width: Math.ceil(390 * zoomFactor), height: Math.ceil(236 * zoomFactor), useContentSize: true,
       resizable: false, maximizable: false, show: false, alwaysOnTop: pinned,
-      title: 'mustplay · Мини-плеер', icon: appIcon, backgroundColor: themeBackground[library.getTheme()],
+      title: 'mustplay · Мини-плеер', icon: appIcon, backgroundColor: themeBackground[currentTheme()],
       webPreferences: { ...preferences, zoomMode: 'isolated', zoomFactor, additionalArguments: ['--mustplay-mini'] },
     })
     mini = compact
@@ -211,17 +211,6 @@ export function registerPlayerExperience(
     miniSender(event)
     if (args.length !== 1) throw new Error('Invalid mini player command arguments')
     sendCommand(playbackCommand(args[0]))
-  })
-  ipcMain.handle(channels.getLyricsMode, (event, ...args: unknown[]) => {
-    mainSender(event)
-    if (args.length) throw new Error('Unexpected lyrics mode arguments')
-    return library.getLyricsMode()
-  })
-  ipcMain.handle(channels.setLyricsMode, (event, ...args: unknown[]) => {
-    mainSender(event)
-    const [mode] = args
-    if (args.length !== 1 || (mode !== 'read' && mode !== 'sync')) throw new Error('Invalid lyrics mode')
-    library.setLyricsMode(mode)
   })
   ipcMain.handle(channels.getLyrics, (event, ...args: unknown[]) => {
     mainSender(event)

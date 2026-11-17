@@ -52,7 +52,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 15 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -193,10 +193,14 @@ it('rolls back the whole scan on a database error and permits retry', async () =
 
 
 it('turns a finished import into a playlist with source metadata and keeps its history', async () => {
-  const file = join(folder, 'tone.mp3')
+  const selected = join(folder, 'selected')
+  await mkdir(selected)
+  const file = join(selected, 'tone.mp3')
   await copyFile(mp3, file)
+  await copyFile(flac, join(folder, 'unrelated.flac'))
   const lib = openLibrary()
-  await lib.importFolder(folder)
+  const [before] = (await lib.importFolder(selected)).tracks
+  const originalFolders = lib.getMusicFolders()
   const job: PipelineJob = {
     id: 'job-1',
     provider: 'deezer',
@@ -221,7 +225,9 @@ it('turns a finished import into a playlist with source metadata and keeps its h
   expect(playlistId).toBeTruthy()
   const playlist = lib.getPlaylists().find(item => item.id === playlistId)
   expect(playlist).toMatchObject({ name: 'Jazz' })
-  expect(playlist?.trackIds).toHaveLength(1)
+  expect(playlist?.trackIds).toEqual([before.id])
+  expect(lib.getMusicFolders()).toEqual(originalFolders)
+  expect(lib.getTracks()).toHaveLength(1)
   const track = lib.getTracks().find(item => item.id === playlist?.trackIds[0])
   expect(track).toMatchObject({
     title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We are Dreaming',

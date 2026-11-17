@@ -1,9 +1,9 @@
 import type {
   AcoustidRecording, AudioCandidate, PipelineDownloadFormat, PipelineItemStatus, PipelineJob, PipelineJobSummary,
-  PipelineMethod, PipelineProvider, PipelineSettings, PipelineStatus,
+  PipelineMethod, PipelineProvider, PipelineSettings,
   PipelineTools, PipelineTrackInput, ProviderPlaylist, WebSourceProvider,
 } from '../shared/pipeline'
-import { builtInAcoustidKey, pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate, pipelineWorkerLimits, webSourceProviders } from '../shared/pipeline'
+import { pipelineProviderLabels, pipelineImportConcurrency, pipelineVerificationRate, pipelineMetadataRate, pipelineDeezerRate, pipelineSpotifyRate, pipelineWorkerLimits, webSourceProviders } from '../shared/pipeline'
 import { LibraryStore } from '../main/library-store'
 import { runTrack, runTracks } from './orchestrator'
 import type { TrackDeps } from './orchestrator'
@@ -18,16 +18,18 @@ import { stubProviders } from '../metadata/providers/types'
 import { resolveImportUrl } from '../imports/resolve-import'
 import { electronShortLinkTransport } from '../imports/electron-short-links'
 import { readSoundCloudSet } from './soundcloud'
-import { buildCommit, buildVersion } from '../shared/build-info'
 import { RateLimiter, retry } from './limiter'
 import { ToolManager } from './tools'
 import { shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 
+// AcoustID identifies the public app. Keep the release key in Main.
+export const builtInAcoustidKey = 'Dm8hohLsF5'
+
 const defaultSettings: PipelineSettings = {
   spotifyClientId: '',
-  acoustidKey: builtInAcoustidKey,
+  acoustidKey: '',
   yandexToken: '',
   downloadDir: '',
   workers: pipelineImportConcurrency,
@@ -111,22 +113,6 @@ export class PipelineService {
     return binary ? new YtDlp(binary) : null
   }
 
-  static defaultSettings(): PipelineSettings {
-    return { ...defaultSettings }
-  }
-
-  status(settings: PipelineSettings, tools: PipelineTools): PipelineStatus {
-    return {
-      // The token is a credential: every status payload carries only the flag.
-      settings: { ...defaultSettings, ...settings, yandexToken: '' },
-      yandexTokenSaved: (settings.yandexToken ?? '').trim().length > 0,
-      tools,
-      job: this.currentJob() ?? null,
-      version: buildVersion,
-      build: buildCommit,
-    }
-  }
-
   currentJob(): PipelineJob | null {
     return this.currentJobId ? this.jobs.get(this.currentJobId) ?? null : null
   }
@@ -158,7 +144,7 @@ export class PipelineService {
     const downloadDir = settings.downloadDir
     if (!downloadDir) throw new Error('Не удалось определить папку для скачивания')
     const acoustidKey = settings.acoustidKey.trim() || builtInAcoustidKey
-    if (!acoustidKey) throw new Error('Укажите ключ AcoustID в дополнительных настройках импорта')
+    if (!acoustidKey) throw new Error('Укажите ключ AcoustID в разделе «Настройки»')
     await this.ensureTools()
     const format: PipelineDownloadFormat = settings.format === 'original' ? 'original' : 'm4a'
     return { downloadDir, acoustidKey, format }

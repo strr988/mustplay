@@ -1,5 +1,21 @@
 import { useRef } from 'react'
 import type { ComponentProps, ReactNode } from 'react'
+import type { PipelineProvider } from '../../shared/pipeline'
+import apple from '../assets/providers/applemusic.svg'
+import deezer from '../assets/providers/deezer.svg'
+import soundcloud from '../assets/providers/soundcloud.svg'
+import spotify from '../assets/providers/spotify.svg'
+import vk from '../assets/providers/vk.svg'
+import yandex from '../assets/providers/yandex.svg'
+import ytmusic from '../assets/providers/youtubemusic.svg'
+
+const providerIcons = { apple, deezer, soundcloud, spotify, vk, yandex, ytmusic } satisfies Record<PipelineProvider, string>
+
+export function ProviderIcon({ provider }: { provider?: PipelineProvider }) {
+  return provider
+    ? <img className="provider-icon" data-provider={provider} alt="" draggable={false} src={providerIcons[provider]} />
+    : <Icon name="link" />
+}
 
 const drawings = {
   timer: <path d="M9 3h6m-3 7v4l2 1m4-8 2-2M20 14a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" />,
@@ -16,7 +32,8 @@ const drawings = {
   moon: <path d="M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2Z" />,
   pin: <path d="M9 4h6l-1 6 4 4H6l4-4zm3 10v7" />,
   expand: <path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7" />,
-  import: <path d="M9 14l2-2 4 4M21 15v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5" />,
+  import: <path d="M4 5h13M4 10h13M4 15h6m7-2v8m-4-4h8" />,
+  link: <path d="m10 13 4-4m-6 7-1 1a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0m2 8a3.5 3.5 0 0 0 5 0l4-4a3.5 3.5 0 0 0-5-5l-1 1" transform="translate(1 1) scale(.92)" />,
   collapse: <path d="m6 9 6 6 6-6" />,
   more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   mini: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h6v4h-6z" /></>,

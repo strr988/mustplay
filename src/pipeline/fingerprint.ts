@@ -74,7 +74,7 @@ export class AcoustidKeyError extends Error {
 function acoustidError(payload: AcoustidResponse, status?: number): Error {
   const message = payload.error?.message ?? (status ? `HTTP ${status}` : 'AcoustID вернул ошибку')
   if (payload.error?.code === 4 || /invalid api key/i.test(message)) return new AcoustidKeyError()
-  return new Error(`AcoustID: ${message}`)
+  return new Error(status ? `AcoustID: HTTP ${status}` : 'AcoustID не смог проверить запись.')
 }
 
 export class Fingerprinter {

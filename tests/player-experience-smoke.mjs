@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { app, BrowserWindow, dialog, globalShortcut } from 'electron'
@@ -13,7 +13,6 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await waitFor('document.querySelectorAll("tbody tr").length === 2 && !document.querySelector(".track-button").disabled', 'player experience catalog')
   await click('Настройки')
   const pulse = 'document.querySelector(\'input[aria-label="Сила пульсации"]\')'
-  await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings loaded')
   const getMini = () => BrowserWindow.getAllWindows().find(window => window !== player)
   async function openMini() {
     await run('window.mustplay.openMiniPlayer()')
@@ -26,11 +25,9 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   if (restart) {
     if (v8) {
       await waitFor('document.documentElement.dataset.cursor === "custom"', 'imported cursor survives restart')
-      await click('Текст песни')
-      await waitFor('document.querySelector("#song-lyrics")?.getAttribute("aria-label") === "Текстомузыка"', 'lyrics mode survives restart')
-      await click('Настройки')
-      await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings restored')
     }
+    await click('Воспроизведение')
+    await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings restored')
     assert.equal(globalShortcut.isRegistered('Ctrl+Shift+F11'), true)
     assert.equal(await run(`${pulse}.valueAsNumber`), 275)
     const mini = await openMini()
@@ -42,7 +39,7 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
     return
   }
   if (v8) {
-    const cursor = 'document.querySelector(`select.settings-input:has(option[value=system])`)'
+    const cursor = 'document.querySelector(`select.settings-input:has(option[value=contrast])`)'
     await waitFor(cursor + ' && !' + cursor + '.disabled', 'cursor settings loaded')
     assert.equal(await run(cursor + '.querySelector("option[value=system]").textContent'), 'Системный')
     const selectCursor = id => run(cursor + '.value = ' + JSON.stringify(id) + '; ' + cursor + '.dispatchEvent(new Event("change", {bubbles:true}))')
@@ -70,18 +67,14 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   assert.equal(await run(colorScheme), 'dark')
   assert.equal(await run('document.querySelector(".window-title img").decode().then(() => true)'), true)
   await assert.rejects(run('window.mustplay.setTheme("sepia")'), /Renderer script failed/)
-  await run(`(() => {
-    const start = document.startViewTransition.bind(document)
-    document.startViewTransition = update => {
-      const transition = start(update)
-      window.themeTransition = transition.finished
-      return transition
-    }
-  })()`)
-  for (const [label, theme] of [['светлую', 'light'], ['тёмную', 'dark'], ['светлую', 'light']]) {
-    await click(`Включить ${label} тему`)
-    assert.equal(await run(`window.themeTransition.then(() => ${colorScheme})`), theme)
+  for (const theme of ['light', 'dark', 'light']) {
+    const picker = 'document.querySelector(\'select[aria-label="Тема оформления"]\')'
+    await waitFor(picker + ' && !' + picker + '.disabled', 'theme picker available')
+    await run(picker + '.value = ' + JSON.stringify(theme) + '; ' + picker + '.dispatchEvent(new Event("change", {bubbles:true}))')
+    await waitFor(colorScheme + ' === ' + JSON.stringify(theme), 'theme applied')
   }
+  await click('Воспроизведение')
+  await waitFor(`${pulse} && !${pulse}.disabled`, 'pulse settings loaded')
   assert.equal(await run(`${pulse}.valueAsNumber`), 100)
   assert.equal(await run('window.mustplay.setWavePulse(301).then(() => false, () => true)'), true)
   await run(`(() => {
@@ -160,45 +153,74 @@ export async function verifyPlayerExperience({ player, folder, run, click, waitF
   await run('window.originalAudio = document.querySelector("audio"); void 0')
   await setRepeat('one')
   await click('Текст песни')
-  await waitFor(`document.querySelector(".lyrics-plain")?.textContent === ${JSON.stringify('Первая строка\nВторая строка')}`, 'reading mode for LRC')
-  await run('document.querySelector("footer button[aria-label=Текстомузыка]").click()')
-  await waitFor('document.querySelector(".lyrics-lines button[aria-current]")?.textContent === "Первая строка"', 'LRC active row')
-  assert.equal(await run('document.querySelector(".text-music h1").textContent'), 'Текстомузыка')
-  assert.equal(await run('document.querySelector("audio") === window.originalAudio'), true)
+  await waitFor(`document.querySelector("#song-lyrics .lyrics-plain")?.textContent === ${JSON.stringify('Первая строка\nВторая строка')}`, 'reading mode for LRC')
+  assert.equal(await run('document.querySelector(".section-nav [aria-current]").ariaLabel'), 'Библиотека')
+  assert.equal(await run('document.activeElement.ariaLabel'), 'Закрыть текст песни')
   const screenshotFolder = process.env.MUSTPLAY_SCREENSHOTS
   if (screenshotFolder) {
     await mkdir(screenshotFolder, { recursive: true })
     const image = await player.webContents.capturePage()
-    await writeFile(join(screenshotFolder, 'text-music.png'), image.toPNG())
+    await writeFile(join(screenshotFolder, '05-lyrics-drawer.png'), image.toPNG())
   }
-  await click('Вторая строка')
+
+  const queue = 'document.querySelector("footer [aria-controls=playback-queue]")'
+  const lyricsButton = 'document.querySelector("footer [aria-controls=song-lyrics]")'
+  await run(queue + '.click()')
+  await waitFor('!document.querySelector("#playback-queue").hidden && !document.querySelector("#song-lyrics")', 'queue closes the lyrics drawer')
+  await run(lyricsButton + '.click()')
+  await waitFor('document.querySelector("#playback-queue").hidden && !!document.querySelector("#song-lyrics")', 'lyrics drawer closes the queue')
+  player.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  player.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  await waitFor('!document.querySelector("#song-lyrics") && document.activeElement === ' + lyricsButton, 'Escape closes lyrics and restores focus')
+  await run(lyricsButton + '.click()')
+  await waitFor('!!document.querySelector("#song-lyrics")', 'lyrics can reopen')
+  await run(lyricsButton + '.click()')
+  await waitFor('!document.querySelector("#song-lyrics")', 'same button closes lyrics')
+  await run(lyricsButton + '.click()')
+  await waitFor('!!document.querySelector("#song-lyrics .lyrics-plain")', 'reading mode is restored')
+
+  const before = await run('document.querySelector("audio").currentTime')
+  const modal = 'document.querySelector(".full-player")'
+  const lines = modal + '.querySelector(".lyrics-lines")'
+  const action = 'document.querySelector(".lyrics-drawer-actions button")'
+  await run(action + '.focus(); ' + action + '.click()', true)
+  await waitFor(`${modal}.open && ${lines}?.querySelectorAll("button").length === 2`, 'lyrics drawer opens synchronized fullscreen')
+  assert.equal(await run('document.querySelector("#full-player-lyrics h2").textContent'), 'Текстомузыка')
+  await waitForAudio(`audio === window.originalAudio && audio.src === ${JSON.stringify(mp3)} && !audio.paused`, 'fullscreen kept the playing audio')
+  const after = await run('document.querySelector("audio").currentTime')
+  assert.ok(Math.abs(after - before) < 1.25 || before > 1.5 && after < 0.6, 'transition preserves the playback position')
+
+  await run(`${lines}.querySelector("li:last-child button").click()`)
   await waitForAudio('audio.currentTime >= 1.5', 'LRC click seeks')
-  await waitFor('document.querySelector(".lyrics-lines button[aria-current]")?.textContent === "Вторая строка"', 'seek updates active row')
-  await run('document.querySelector(".lyrics-lines").dispatchEvent(new WheelEvent("wheel", {deltaY: 80, bubbles: true}))')
+  await waitFor(`${lines}.querySelector("button[aria-current]")?.textContent === "Вторая строка"`, 'seek updates active row')
+  await run(`${lines}.querySelector("li:first-child button").click()`)
+  await waitFor(`${lines}.querySelector("button[aria-current]")?.textContent === "Первая строка"`, 'seeking backward updates active row')
+  await run(`${lines}.dispatchEvent(new WheelEvent("wheel", {deltaY: 80, bubbles: true}))`)
   await waitFor('document.querySelector(".lyrics-toolbar button").getAttribute("aria-pressed") === "false"', 'manual scrolling disables follow')
+  await click('Следить за текстом')
+  await waitFor('document.querySelector(".lyrics-toolbar button").getAttribute("aria-pressed") === "true"', 'follow can be re-enabled')
   await click('Следующий трек')
   const flac = await waitForAudio(`!audio.paused && audio.src !== ${JSON.stringify(mp3)}`, 'FLAC playback')
-  await waitFor('document.querySelector(".lyrics-plain")?.textContent === "Простой текст FLAC" && !document.querySelector(".lyrics-lines")', 'lyrics follow track change')
-  assert.match(await run('document.querySelector(".lyrics-note").textContent'), /нет временных меток/)
+  await waitFor(`${modal}.querySelector(".lyrics-plain")?.textContent === "Простой текст FLAC" && !${lines}`, 'lyrics follow track change')
+  assert.match(await run(`${modal}.querySelector(".lyrics-note").textContent`), /нет временных меток/)
+  await click('Свернуть полноэкранный плеер')
+  await waitFor(`!${modal}.open && !document.fullscreenElement && document.activeElement === ${action}`, 'fullscreen collapse returns to the drawer')
+  await waitFor('document.querySelector("#song-lyrics .lyrics-plain")?.textContent === "Простой текст FLAC"', 'reader updates with the next track')
+  await click('Закрыть текст песни')
   await waitFor('!document.querySelector(\'footer button[aria-label="Предыдущий трек"]\').disabled', 'previous track is ready')
   await click('Предыдущий трек')
   await waitForAudio(`!audio.paused && audio.src === ${JSON.stringify(mp3)}`, 'back to MP3')
-  await waitFor('document.querySelector(".lyrics-toolbar button")?.getAttribute("aria-pressed") === "true"', 'new track resets lyric follow')
-  await click('Читать текст')
-  await waitFor('!!document.querySelector(".lyrics-plain") && !document.querySelector(".lyrics-lines")', 'read text without synchronization')
-  await run('document.querySelector(".lyrics-heading button").click()')
-  await waitFor('!!document.querySelector(".text-music .lyrics-lines")', 'return to synchronized lyrics')
-  await run('window.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", cancelable:true}))')
-  await waitFor('document.querySelector("nav button[aria-current]").getAttribute("aria-label") === "Библиотека"', 'Escape returns to previous section')
-  await waitForAudio(`audio === window.originalAudio && audio.src === ${JSON.stringify(mp3)} && !audio.paused`, 'lyrics mode never replaces playback')
-
-  if (v8) {
-    await click('Текст песни')
-    await waitFor('!document.querySelector("#song-lyrics").parentElement.hidden && !!document.querySelector(".text-music .lyrics-lines")', 'lyrics tab remembers synchronization mode')
-    assert.equal(await run('getComputedStyle(document.querySelector(".lyrics-lines")).scrollbarWidth'), 'none')
-    await click('Библиотека')
-  }
   await verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3, flac, screenshotFolder, v8 })
+
+  await rm(join(folder, '02.txt'))
+  await click('Следующий трек')
+  await waitForAudio(`audio.src === ${JSON.stringify(flac)}`, 'track with missing lyrics')
+  await click('Текст песни')
+  await waitFor('document.querySelector("#song-lyrics").innerText.includes("Текст не найден")', 'missing lyrics state')
+  await click('Закрыть текст песни')
+  await click('Предыдущий трек')
+  await waitForAudio(`audio.src === ${JSON.stringify(mp3)}`, 'primary track restored')
+
 
   if (v8) {
     await click('На весь экран')
@@ -503,7 +525,7 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await waitFor(`${coverControls} === "0"`, 'cover controls disappear when the pointer leaves in text music')
   await hover(cover)
   await waitFor(`${coverControls} === "1"`, 'hover reveals controls again while showing lyrics')
-  assert.equal(await run('!document.querySelector("#full-player-lyrics :is(.lyrics-heading, .lyrics-toolbar)")'), true)
+  assert.equal(await run('!!document.querySelector("#full-player-lyrics .lyrics-toolbar button")'), true)
   assert.equal(await run(`getComputedStyle(${lines}).scrollbarWidth`), 'none')
   await press('Пауза')
   await waitForAudio('audio.paused', 'pause before testing manual lyric scrolling')
@@ -520,7 +542,7 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
   await waitFor(`${lines}.querySelector("[aria-current]")?.textContent === "Вторая строка"`, 'fullscreen highlights the current line')
   if (screenshotFolder) {
     const image = await player.webContents.capturePage()
-    await writeFile(join(screenshotFolder, 'fullscreen-text-music.png'), image.toPNG())
+    await writeFile(join(screenshotFolder, '06-fullscreen-text-music.png'), image.toPNG())
   }
   await press('Следующий трек')
   await waitForAudio(`audio === window.originalAudio && audio.src === ${JSON.stringify(flac)} && !audio.paused`, 'fullscreen next uses the shared queue')

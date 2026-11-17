@@ -7,8 +7,9 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import executable from 'electron'
-import { flacWithArtwork, mp3WithArtwork, mp3WithMetadata } from './fixtures/artwork.ts'
+import { flacWithArtwork, m4aWithLargeMediaAtom, mp3WithArtwork, mp3WithMetadata } from './fixtures/artwork.ts'
 import { catalogSize, fixtureMetadata } from './fixtures/interface-catalog.mjs'
+import { writeTags } from '../src/main/yandex-tags.ts'
 import { prepareSession } from '../scripts/pilot-session.mjs'
 
 async function prepareElectron(t, { withArtwork = false, withCatalog = false } = {}) {
@@ -63,6 +64,24 @@ const localM4a = process.env.MUSTPLAY_TEST_M4A_PATH
 test('original Smells Like Teen Spirit M4A imports, plays and seeks in Electron', { skip: !localM4a, timeout: 40_000 }, async t => {
   const { run } = await prepareElectron(t)
   await run('local-flac-in-m4a', localM4a)
+})
+
+test('M4A covr is decoded in the library and both players across rescan and restart', { timeout: 75_000 }, async t => {
+  const { fixtures, run } = await prepareElectron(t)
+  const audio = m4aWithLargeMediaAtom(await readFile(new URL('./fixtures/formats/tone.m4a', import.meta.url)))
+  const cover = await readFile(new URL('./fixtures/cover.jpg', import.meta.url))
+  await writeFile(join(fixtures, 'cover.m4a'), writeTags('m4a', audio, {
+    title: 'M4A fixture', album: '', artists: [], albumArtists: [], date: null, trackNumber: null, discNumber: null,
+    lyrics: null, genre: null, comment: null, cover: { mime: 'image/jpeg', data: cover },
+  }))
+  await run('m4a-artwork')
+  await run('m4a-artwork-restart')
+})
+
+const localCover = process.env.MUSTPLAY_TEST_COVER_M4A_PATH
+test('the user-supplied Yandex M4A decodes its embedded artwork in Electron', { skip: !localCover, timeout: 40_000 }, async t => {
+  const { run } = await prepareElectron(t)
+  await run('local-m4a-artwork', localCover)
 })
 
 test('excluding a music folder revokes its playback while preserving overlapping folders', { timeout: 40_000 }, async t => {
@@ -142,7 +161,8 @@ test('interface scale and audio effects apply live and restore across restarts',
   await run('scale-effects-restart')
 })
 
-test('Yandex search section renders and stores download settings in Electron', { timeout: 40_000 }, async t => {
+test('import, search, theme and source settings work across Electron restarts', { timeout: 75_000 }, async t => {
   const { run } = await prepareElectron(t)
   await run('search-ui')
+  await run('search-ui-restart')
 })

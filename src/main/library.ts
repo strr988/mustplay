@@ -3,7 +3,7 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { parseFile, parseStream } from 'music-metadata'
-import type { ImportIssue, ImportResult, LibraryTrack, LyricsMode, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
+import type { ImportIssue, ImportResult, LibraryTrack, Track, ListeningDataReader, PlaybackEventInput, PlaybackSession, VolumePreference, WaveMode } from '../shared/contracts'
 import type { PipelineJob } from '../shared/pipeline'
 import type { RecommendationCandidate } from '../recommendations/engine'
 import { LibraryStore } from './library-store'
@@ -12,7 +12,7 @@ import { audioFormatForPath, matchesAudioFormat } from './audio-formats'
 import { filterPlaybackSession } from './playback-session'
 import { fileIdentity, moveKey, sameFile, sameIdentity } from './local-file'
 import type { FileIdentity } from './local-file'
-import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, Theme, YandexLyricsFormat, YandexQuality, YandexSettings } from '../shared/contracts'
+import type { InterfaceScale, RescanResult, ShortcutAction, SoundEffect, SoundSettings, ThemePreference, YandexLyricsFormat, YandexQuality, YandexSettings } from '../shared/contracts'
 
 interface ScannedFile {
   path: string
@@ -113,15 +113,13 @@ export class Library implements ListeningDataReader {
   setVolume(volume: VolumePreference): void { this.store.setVolume(volume) }
   getWavePulse(): number { return this.store.getWavePulse() }
   setWavePulse(intensity: number): void { this.store.setWavePulse(intensity) }
-  getTheme(): Theme { return this.store.getTheme() }
-  setTheme(theme: Theme): void { this.store.setTheme(theme) }
+  getTheme(): ThemePreference { return this.store.getTheme() }
+  setTheme(theme: ThemePreference): void { this.store.setTheme(theme) }
   getInterfaceScale(): InterfaceScale { return this.store.getInterfaceScale() }
   setInterfaceScale(scale: InterfaceScale): void { this.store.setInterfaceScale(scale) }
   getSoundEffect(): SoundSettings { return this.store.getSoundEffect() }
   setSoundEffect(effect: SoundEffect): void { this.store.setSoundEffect(effect) }
   setReverb(effect: SoundEffect, enabled: boolean): void { this.store.setReverb(effect, enabled) }
-  getLyricsMode() { return this.store.getLyricsMode() }
-  setLyricsMode(mode: LyricsMode) { this.store.setLyricsMode(mode) }
   getCursorSettings() { return this.store.getCursorSettings() }
   setCursorPreset(id: string) { this.store.setCursorPreset(id); return this.getCursorSettings() }
   importCursorPreset(label: string, arrow: CursorImage, pointer: CursorImage) {
@@ -136,12 +134,9 @@ export class Library implements ListeningDataReader {
   getShortcuts() { return this.store.getShortcuts() }
   setShortcut(action: ShortcutAction, accelerator: string | null): void { this.store.setShortcut(action, accelerator) }
 
-  getYandexSettings(): YandexSettings {
-    const { token, quality, lyrics, embedCover, folder } = this.store.getYandexSettings()
-    return {
-      hasToken: token !== null && token.length > 0, quality, lyrics, embedCover,
-      folderLabel: folder ? folder.split(sep).filter(Boolean).slice(-2).join(' / ') || 'Корневая папка' : null,
-    }
+  getYandexSettings(): Pick<YandexSettings, 'quality' | 'lyrics' | 'embedCover'> {
+    const { quality, lyrics, embedCover } = this.store.getYandexSettings()
+    return { quality, lyrics, embedCover }
   }
   getYandexTokenBlob() { return this.store.getYandexSettings() }
   setYandexTokenBlob(token: Uint8Array | null, encrypted: boolean): void { this.store.setYandexToken(token, encrypted) }
@@ -231,9 +226,9 @@ export class Library implements ListeningDataReader {
 
   /**
    * Turns a finished pipeline job into library tracks and a playlist. Files are
-   * scanned as usual, then the catalogue metadata from the source is written on
-   * top: downloaded webm/opus often has no tags, and the file name is not a
-   * good track title.
+   * indexed individually. The download root is independent of the folders
+   * explicitly added for recursive library scans. Catalogue metadata supplies
+   * titles for downloads that have incomplete tags.
    */
   importPipelineJob(job: PipelineJob, downloadDir: string): Promise<string | null> {
     return this.enqueueScan(async () => {
@@ -243,17 +238,26 @@ export class Library implements ListeningDataReader {
       if (!verified.length) return null
       const root = await realpath(downloadDir)
       if (!(await lstat(root)).isDirectory()) throw new Error('Expected a download folder')
-      await this.scanFolder(root)
+      const files = new Map<string, ScannedFile>()
+      const paths = new Map<string, string>()
+      for (const item of verified) {
+        try {
+          const path = await realpath(item.filePath!)
+          const format = audioFormatForPath(extname(path).toLowerCase())
+          if (!format || !isWithin(root, path)) continue
+          if (!files.has(path)) files.set(path, await this.readFile(path, format))
+          paths.set(item.id, path)
+        } catch {
+          // A download may have disappeared or become unreadable before import.
+        }
+      }
+      if (!files.size) return null
+      await this.saveScan(null, [...files.values()])
 
       const trackIds: string[] = []
       for (const item of verified) {
-        let path: string
-        try {
-          path = await realpath(item.filePath!)
-        } catch {
-          continue
-        }
-        if (!isWithin(root, path)) continue
+        const path = paths.get(item.id)
+        if (!path) continue
         const trackId = this.store.findTrackIdByPath(path)
         if (!trackId) continue
         this.store.updateTrackMetadata(trackId, {
@@ -354,7 +358,7 @@ export class Library implements ListeningDataReader {
     return { processed: files.length, issues }
   }
 
-  private async saveScan(root: string, files: ScannedFile[]): Promise<void> {
+  private async saveScan(root: string | null, files: ScannedFile[]): Promise<void> {
     const previous = this.store.getLocalSources(true)
     const byPath = new Map(previous.map((source) => [source.path, source]))
     const byMoveKey = new Map<string, LocalSource | null>()
@@ -395,7 +399,7 @@ export class Library implements ListeningDataReader {
 
     const availability = new Map<string, boolean>()
     for (const source of previous) {
-      if (!source.excluded && isWithin(root, source.path) && !refreshedSources.has(source.id)) {
+      if (root && !source.excluded && isWithin(root, source.path) && !refreshedSources.has(source.id)) {
         availability.set(source.id, await isAvailable(source))
       }
     }

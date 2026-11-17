@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { channels } from '../shared/contracts'
 import type { IpcRendererEvent } from 'electron'
 import type { MiniPlayerApi, MustplayApi } from '../shared/contracts'
-import type { PipelineJob, PipelineJobSummary, PipelineSettings, PipelineStatus, PipelineTools } from '../shared/pipeline'
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
   const listener = (_event: IpcRendererEvent, value: T) => callback(value)
@@ -20,6 +19,7 @@ const api: MustplayApi = {
   getCursorSettings: () => ipcRenderer.invoke(channels.getCursorSettings),
   setCursorPreset: id => ipcRenderer.invoke(channels.setCursorPreset, id),
   importCursorPreset: () => ipcRenderer.invoke(channels.importCursorPreset),
+  getThemePreference: () => ipcRenderer.invoke(channels.getThemePreference),
   setTheme: (theme) => ipcRenderer.invoke(channels.setTheme, theme),
   getInterfaceScale: () => ipcRenderer.invoke(channels.getInterfaceScale),
   setInterfaceScale: (scale) => ipcRenderer.invoke(channels.setInterfaceScale, scale),
@@ -49,8 +49,6 @@ const api: MustplayApi = {
   setVolume: (level, muted) => ipcRenderer.invoke(channels.setVolume, level, muted),
   getPlaybackSession: () => ipcRenderer.invoke(channels.getPlaybackSession),
   setPlaybackSession: (session) => ipcRenderer.invoke(channels.setPlaybackSession, session),
-  getLyricsMode: () => ipcRenderer.invoke(channels.getLyricsMode),
-  setLyricsMode: mode => ipcRenderer.invoke(channels.setLyricsMode, mode),
   getLyrics: (id) => ipcRenderer.invoke(channels.getLyrics, id),
   openMiniPlayer: () => ipcRenderer.invoke(channels.openMiniPlayer),
   publishMiniState: (state) => ipcRenderer.invoke(channels.publishMiniState, state),
@@ -63,9 +61,9 @@ const api: MustplayApi = {
   setShortcutCapture: (capturing) => ipcRenderer.invoke(channels.setShortcutCapture, capturing),
   getPipelineStatus: () => ipcRenderer.invoke(channels.getPipelineStatus),
   savePipelineSettings: (settings) => ipcRenderer.invoke(channels.savePipelineSettings, settings),
+  resetPipelineFolder: () => ipcRenderer.invoke(channels.resetPipelineFolder),
   choosePipelineFolder: () => ipcRenderer.invoke(channels.choosePipelineFolder),
   installPipelineTools: () => ipcRenderer.invoke(channels.installPipelineTools),
-  openYandexTokenHelp: () => ipcRenderer.invoke(channels.openYandexTokenHelp),
   connectPipelineSpotify: () => ipcRenderer.invoke(channels.connectPipelineSpotify),
   disconnectPipelineSpotify: () => ipcRenderer.invoke(channels.disconnectPipelineSpotify),
   exchangePipelineSpotifyCode: (code, state) => ipcRenderer.invoke(channels.exchangePipelineSpotifyCode, code, state),
@@ -87,6 +85,7 @@ const api: MustplayApi = {
   setYandexQuality: (quality) => ipcRenderer.invoke(channels.setYandexQuality, quality),
   setYandexLyrics: (format) => ipcRenderer.invoke(channels.setYandexLyrics, format),
   setYandexEmbedCover: (enabled) => ipcRenderer.invoke(channels.setYandexEmbedCover, enabled),
+  resetYandexFolder: () => ipcRenderer.invoke(channels.resetYandexFolder),
   chooseYandexFolder: () => ipcRenderer.invoke(channels.chooseYandexFolder),
   openYandexTokenPage: () => ipcRenderer.invoke(channels.openYandexTokenPage),
   yandexSearch: (text, page) => ipcRenderer.invoke(channels.yandexSearch, text, page),

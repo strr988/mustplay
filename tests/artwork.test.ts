@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Artwork } from '../src/main/artwork'
 import { Library } from '../src/main/library'
-import { flacWithArtwork, mp3WithArtwork } from './fixtures/artwork'
+import { flacWithArtwork, m4aWithLargeMediaAtom, mp3WithArtwork } from './fixtures/artwork'
+import { writeTags } from '../src/main/yandex-tags'
+import { readTrackLyrics } from '../src/main/lyrics'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url))
 let folder: string
@@ -95,4 +97,46 @@ it('keeps playable tracks with missing, corrupt, unsupported and oversized artwo
     expect((await serve(track.artworkUrl!)).status).toBe(404)
   }
   expect((await serve('mustplay://app/artwork/00000000-0000-0000-0000-000000000000')).status).toBe(404)
+})
+
+it('reads M4A covr and lyrics beyond a large mdat, then refreshes artwork without changing the track ID', async () => {
+  const audio = m4aWithLargeMediaAtom(await fixture('formats/tone.m4a'))
+  const jpeg = await fixture('cover.jpg')
+  const png = await fixture('cover.png')
+  const path = join(folder, 'tagged.m4a')
+  const tags = {
+    title: 'M4A fixture', album: '', artists: [], albumArtists: [], date: null,
+    trackNumber: null, discNumber: null, genre: null, lyrics: 'Встроенный текст', comment: null,
+  }
+  const first = writeTags('m4a', audio, { ...tags, cover: { mime: 'image/jpeg', data: jpeg } })
+  await writeFile(path, first)
+  const { tracks, processed } = await library.importFolder(folder)
+  expect(processed).toBe(1)
+  const [track] = tracks
+  expect(track.title).toBe('M4A fixture')
+  const response = await serve(track.artworkUrl!)
+  expect(response.headers.get('Content-Type')).toBe('image/jpeg')
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(jpeg)
+  expect(await readTrackLyrics(library, track.id)).toEqual({ kind: 'plain', text: tags.lyrics })
+  async function rescan() {
+    const result = await library.rescanLibrary()
+    if (result.status !== 'complete') throw new Error('Library rescan failed')
+    return result.tracks
+  }
+  expect(await rescan()).toEqual(tracks)
+  expect(await readFile(path)).toEqual(first)
+
+  await writeFile(path, writeTags('m4a', audio, { ...tags, cover: { mime: 'image/png', data: png } }))
+  const [updated] = await rescan()
+  expect(updated.id).toBe(track.id)
+  expect(updated.artworkUrl).not.toBe(track.artworkUrl)
+  expect((await serve(track.artworkUrl!)).status).toBe(404)
+  const refreshed = await serve(updated.artworkUrl!)
+  expect(refreshed.headers.get('Content-Type')).toBe('image/png')
+  expect(Buffer.from(await refreshed.arrayBuffer())).toEqual(png)
+
+  await writeFile(path, writeTags('m4a', audio, { ...tags, cover: { mime: 'image/png', data: png.subarray(0, 24) } }))
+  const [corrupt] = await rescan()
+  expect(corrupt.id).toBe(track.id)
+  expect((await serve(corrupt.artworkUrl!)).status).toBe(404)
 })

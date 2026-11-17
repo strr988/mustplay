@@ -1,9 +1,25 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
 import { defaultWavePulse, interfaceScales, maxWavePulse, shortcutActions } from '../../shared/contracts'
 import type { InterfaceScale, ShortcutAction, ShortcutBinding, ShortcutBindings } from '../../shared/contracts'
 import type { useCursorSettings } from './cursor'
 import { DiscoButton, type useDiscoMode } from './disco'
 import { captureShortcut } from './shortcut-capture'
+import { ThemeSetting } from './theme-toggle'
+import { SourceSettings } from './source-settings'
+import { SoundSettingsFields } from './sound-menu'
+import type { usePlayback } from './playback'
+import { buildCommit, buildVersion } from '../../shared/build-info'
+
+const settingsSections = {
+  appearance: 'Внешний вид',
+  playback: 'Воспроизведение',
+  sources: 'Источники и подключения',
+  files: 'Импорт и файлы',
+  tools: 'Модули и инструменты',
+  about: 'О приложении',
+} as const
+
+export type SettingsSection = keyof typeof settingsSections
 
 const shortcutLabels: Record<ShortcutAction, string> = {
   toggle: 'Воспроизведение / пауза', next: 'Следующий трек', previous: 'Предыдущий трек',
@@ -18,19 +34,43 @@ const shortcutErrors = {
   unavailable: 'Windows не зарегистрировала сочетание. Возможно, оно занято.',
 }
 
-export function PlayerSettings({ wavePulse, changeWavePulse, disco, cursor }: {
+export function PlayerSettings({ section, selectSection, wavePulse, changeWavePulse, disco, cursor, playback }: {
+  section: SettingsSection
+  selectSection: (section: SettingsSection) => void
+  playback: ReturnType<typeof usePlayback>
   wavePulse: number | null
   changeWavePulse: (value: number) => void
   disco: ReturnType<typeof useDiscoMode>
   cursor: ReturnType<typeof useCursorSettings>
 }) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  useLayoutEffect(() => { heading.current?.focus() }, [])
+  const connectionSettings = section === 'sources' || section === 'files' || section === 'tools'
   return <section aria-label="Настройки плеера">
     <header className="section-heading">
-      <h1>Настройки</h1>
+      <h1 className="settings-heading" ref={heading} tabIndex={-1}>Настройки</h1>
     </header>
+    <nav className="settings-navigation" aria-label="Разделы настроек">
+      {(Object.keys(settingsSections) as SettingsSection[]).map(id => <button type="button" key={id} className="secondary"
+        aria-current={section === id ? 'page' : undefined} onClick={() => selectSection(id)}>
+        {settingsSections[id]}
+      </button>)}
+    </nav>
     <div className="player-settings">
-      <InterfaceSettings disco={disco} cursor={cursor} />
-      <section className="settings-card">
+      {section === 'appearance' && <InterfaceSettings disco={disco} cursor={cursor} />}
+      {connectionSettings && <SourceSettings section={section} />}
+      {section === 'about' && <section className="settings-card">
+        <h2>О приложении</h2>
+        <p>mustplay {buildVersion}</p>
+        <p className="muted">Сборка {buildCommit}</p>
+      </section>}
+      {section === 'playback' && <>
+        <section className="settings-card playback-sound-settings">
+          <h2>Звуковые эффекты</h2>
+          <SoundSettingsFields sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
+            changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
+        </section>
+        <section className="settings-card">
         <h2>Моя волна</h2>
         <label className="pulse-setting">
           <span>Сила пульсации</span>
@@ -40,8 +80,9 @@ export function PlayerSettings({ wavePulse, changeWavePulse, disco, cursor }: {
             aria-valuetext={wavePulse === 0 ? 'Выключена' : `${wavePulse ?? defaultWavePulse}%`}
             onChange={event => changeWavePulse(event.currentTarget.valueAsNumber)} />
         </label>
-      </section>
-      <ShortcutSettings />
+        </section>
+        <ShortcutSettings />
+      </>}
     </div>
   </section>
 }
@@ -74,7 +115,8 @@ function InterfaceSettings({ disco, cursor }: { disco: ReturnType<typeof useDisc
   }
 
   return <section className="settings-card">
-    <h2>Интерфейс</h2>
+    <h2>Внешний вид</h2>
+    <ThemeSetting />
     <label className="settings-option">
       <span>Масштаб интерфейса</span>
       <select className="settings-input player-select" aria-label="Масштаб интерфейса" value={scale ?? ''} disabled={scale === undefined || saving}
