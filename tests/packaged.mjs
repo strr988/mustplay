@@ -137,6 +137,21 @@ function unpack(zip, directory) {
   execFileSync(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', zip], { cwd: directory })
 }
 
+async function renameUnpackedApp(source, destination) {
+  // Windows can keep a just-closed Electron DLL or executable mapped briefly.
+  // Retry transient file locks; all other errors still fail immediately.
+  const retryCodes = new Set(['EPERM', 'EACCES', 'EBUSY'])
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(source, destination)
+      return
+    } catch (error) {
+      if (attempt >= 9 || !retryCodes.has(error?.code)) throw error
+      await delay(250 * (attempt + 1))
+    }
+  }
+}
+
 test('Windows ZIP launches from two locations and restores offline wave playback', { timeout: 90_000 }, async (t) => {
   const { root, launch, folder, profile, app, mp3, flac, demoMp3, demoFlac } = await prepareRelease(t)
   await verifyExe(app, root, profile, folder, 'wave-import')
@@ -146,7 +161,7 @@ test('Windows ZIP launches from two locations and restores offline wave playback
   assert.deepEqual(await readFile(flac), await readFile(demoFlac))
   await rm(flac)
   const moved = join(root, 'Перенесённый плеер')
-  await rename(app, moved)
+  await renameUnpackedApp(app, moved)
   await verifyExe(moved, launch, profile, folder, 'wave-restart')
 })
 
