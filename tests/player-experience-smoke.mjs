@@ -472,10 +472,14 @@ async function verifyFullPlayer({ player, run, click, waitFor, waitForAudio, mp3
     const glow = stage + '.querySelector(".disco-layer")'
     await waitFor(`!!${glow}`, 'disco enabled from fullscreen menu')
     const reducedMotion = await run('matchMedia("(prefers-reduced-motion: reduce)").matches')
-    if (reducedMotion) {
+    const supportsReducedMotionGlow = await run('typeof window.mustplay.clearYandexHistory === "function"')
+    if (reducedMotion && !supportsReducedMotionGlow) {
       assert.equal(await run(`getComputedStyle(${glow}).display`), 'none')
     } else {
       await waitFor(`parseFloat(getComputedStyle(${glow}).opacity) > 0.025`, 'disco responds to playing audio')
+      if (reducedMotion) {
+        assert.equal(await run(`getComputedStyle(${glow}.querySelector('i')).animationName`), 'none')
+      }
     }
     if (screenshotFolder) {
       await writeFile(join(screenshotFolder, 'disco-fullscreen.png'), (await player.webContents.capturePage()).toPNG())
