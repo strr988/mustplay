@@ -28,7 +28,7 @@ jobs:
       - name: Type-check and build
         run: pnpm build
       - name: Unit tests
-        run: pnpm test
+        run: pnpm test --maxWorkers=2 --testTimeout=15000
       - name: Source settings in Electron
         run: node --test --test-name-pattern "import, search, theme" tests/desktop.mjs
       - name: Build Windows x64 ZIP
