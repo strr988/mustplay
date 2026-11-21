@@ -134,7 +134,7 @@ async function prepareRelease(t) {
 }
 
 function unpack(zip, directory) {
-  execFileSync(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', zip, '-C', directory])
+  execFileSync(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', zip], { cwd: directory })
 }
 
 test('Windows ZIP launches from two locations and restores offline wave playback', { timeout: 90_000 }, async (t) => {
