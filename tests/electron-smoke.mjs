@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promis
 import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, nativeTheme } from 'electron'
 import { verifyInterface } from './interface-smoke.mjs'
 import { verifyPlayerExperience } from './player-experience-smoke.mjs'
 
@@ -21,8 +21,14 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
   await app.whenReady()
   const player = await eventually(() => BrowserWindow.getAllWindows()[0], 'Electron window')
   const { webContents } = player
-  const v8 = !app.isPackaged || app.getVersion() === '0.8.0'
-  const mustplay = v8 || app.getVersion() === '0.7.0'
+  const version = app.getVersion()
+  const minor = Number(version.split('.')[1] ?? 0)
+  // Packaged builds of historical versions are part of the release test, so
+  // feature gates must keep working for every newer minor version too.
+  const ux = !app.isPackaged || minor >= 11
+  const v9 = !app.isPackaged || minor >= 9
+  const v8 = !app.isPackaged || minor >= 8
+  const mustplay = !app.isPackaged || minor >= 7
   const rendererApi = mustplay ? 'window.mustplay' : 'window.musicPlayer'
   const origin = mustplay ? 'mustplay://app' : 'music-player://app'
   const run = (script, gesture = false) => webContents.executeJavaScript(
@@ -123,7 +129,19 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         mustplay ? ['getInterfaceScale', 'setInterfaceScale', 'getSoundEffect', 'setSoundEffect', 'setTheme',
           'setReverb', 'getDiscoMode', 'setDiscoMode', 'publishDiscoBeat'] : [],
         v8 ? ['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
-          'onShowFullPlayer', 'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'] : []).sort()
+          'onShowFullPlayer', 'exitMiniFullscreen', ...(ux ? [] : ['getLyricsMode', 'setLyricsMode'])] : [],
+        v9 ? ['getPipelineStatus', 'savePipelineSettings', 'choosePipelineFolder', 'installPipelineTools',
+          ...(ux ? [] : ['openYandexTokenHelp']),
+          'connectPipelineSpotify', 'disconnectPipelineSpotify', 'exchangePipelineSpotifyCode',
+          'startPipelineImport', 'getPipelineJob', 'cancelPipelineImport', 'listPipelineJobs',
+          'retryPipelineItem', 'skipPipelineItem',
+          'openPipelineFolder', 'openWebSource', 'getWebSourceState', 'setWebSourceBounds',
+          'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData',
+          'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
+          'chooseYandexFolder', ...(app.isPackaged && Number(app.getVersion().split('.')[1]) < 12 ? ['openYandexTokenPage'] : []), 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'getYandexDownloads', 'onYandexDownloads'] : [],
+        ux ? ['getThemePreference', 'resetPipelineFolder', 'resetYandexFolder'] : [],
+        !app.isPackaged || Number(app.getVersion().split('.')[1]) >= 12 ? ['clearPipelineHistory', 'clearYandexHistory'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -174,6 +192,44 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     await waitForAudio(advancing + ' && audio.duration > 250', 'original FLAC-in-M4A decodes')
     await run('document.querySelector("audio").currentTime = 150')
     await waitForAudio('!audio.paused && audio.currentTime > 150.2', 'original FLAC-in-M4A seeks and decodes')
+    return
+  }
+
+  if (['m4a-artwork', 'm4a-artwork-restart', 'local-m4a-artwork'].includes(phase)) {
+    const local = phase === 'local-m4a-artwork'
+    const restart = phase === 'm4a-artwork-restart'
+    if (!restart) {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [local ? dirname(folder) : folder] })
+      await click(importLabel)
+    }
+    const track = await waitFor(`window.mustplay.getTracks().then(tracks => tracks.find(track =>
+      track.format === 'm4a' && track.available && (${local} || track.title === 'M4A fixture')))`, 'M4A track imported')
+    const url = JSON.stringify(track.artworkUrl)
+    const image = scope => 'document.querySelector(' + JSON.stringify(scope + ' img[src=' + url + ']') + ')'
+    await waitFor(image('tbody') + '?.naturalWidth > 0', 'M4A cover in library')
+    const result = await run(`fetch(${url}).then(response => [response.status, response.headers.get('Content-Type')])`)
+    assert.deepEqual(result, [200, 'image/jpeg'])
+    if (!local) {
+      if (restart) {
+        const saved = JSON.parse(await readFile(stateFile, 'utf8'))
+        assert.equal(saved.id, track.id)
+        assert.equal(saved.artworkUrl, track.artworkUrl)
+      } else {
+        await writeFile(stateFile, JSON.stringify({ id: track.id, artworkUrl: track.artworkUrl }))
+        await click('Обновить')
+        await waitFor('!document.querySelector(".library-folder-actions .secondary").disabled', 'rescan finished')
+        assert.equal((await run('window.mustplay.getTracks()')).find(row => row.id === track.id)?.artworkUrl, track.artworkUrl)
+        await waitFor(image('tbody') + '?.naturalWidth > 0', 'M4A cover survives rescan')
+      }
+    }
+    await run('window.mustplay.setVolume(0, true)')
+    await click(track.title)
+    await waitForAudio(advancing, 'M4A plays')
+    await waitFor(image('footer') + '?.naturalWidth > 0', 'M4A cover in the bottom player')
+    await click('На весь экран')
+    await waitFor(image('.full-player[open] .full-player-cover') + '?.naturalWidth > 0', 'M4A cover in fullscreen')
+    await click('Свернуть полноэкранный плеер')
+    await waitFor('!document.querySelector(".full-player").open && !document.fullscreenElement', 'fullscreen closes')
     return
   }
 
@@ -302,7 +358,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
     const effect = 'Звуковой эффект'
     await waitFor(ready(scale), 'interface scale loaded')
     assert.equal(await run('document.querySelector(".window-title strong").textContent'), 'mustplay')
-    const openSound = () => click('Звуковые эффекты')
+    const openSound = () => run('document.querySelector("footer .sound-button").click()', true)
     const wet = 'document.querySelector(".sound-menu:popover-open [role=switch]")'
     const checkWet = (enabled) => waitFor(`${wet} && !${wet}.disabled && ${wet}.checked === ${enabled}`, 'reverb state for current preset')
     if (phase === 'scale-effects-restart') {
@@ -387,6 +443,145 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
 
   if (phase === 'interface') {
     await verifyInterface({ player, run, click, waitFor, waitForAudio, folder, pendingRows, importLabel, v8 })
+    return
+  }
+
+  if (phase === 'search-ui' || phase === 'search-ui-restart') {
+    const customFolderName = folder.split(/[\\/]/).pop()
+    const screenshots = process.env.MUSTPLAY_SCREENSHOTS
+    async function capture(name) {
+      if (!screenshots) return
+      await mkdir(screenshots, { recursive: true })
+      await run('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+      await writeFile(join(screenshots, name + '.png'), (await player.webContents.capturePage()).toPNG())
+    }
+
+    if (phase === 'search-ui-restart') {
+      const pipeline = (await run('window.mustplay.getPipelineStatus()')).settings
+      assert.equal(pipeline.acoustidKeySource, 'custom')
+      assert.equal(pipeline.folderLabel, customFolderName)
+      assert.equal(pipeline.folderAvailable, true)
+      const yandex = await run('window.mustplay.getYandexSettings()')
+      assert.equal(yandex.folderLabel, customFolderName)
+      assert.equal(yandex.folderAvailable, true)
+      assert.equal(yandex.quality, 'lossless')
+      assert.equal(yandex.lyrics, 'text')
+      assert.equal(yandex.embedCover, false)
+      await rename(folder, folder + '-unavailable')
+      await click('Импорт')
+      await waitFor('document.querySelector(".import-link-actions").innerText.includes("Папка загрузок недоступна")', 'stale folder warning in Import')
+      await click('Выбрать папку в настройках')
+      await waitFor('document.querySelector("#files-heading").getClientRects().length > 0', 'warning opens folder settings')
+      await click('Источники и подключения')
+      await waitFor('document.querySelector("#sources-heading").parentElement.innerText.includes("Используется пользовательский ключ")', 'saved key status')
+      assert.equal(await run('document.querySelector(\'input[aria-label="Ключ AcoustID"]\').value'), '')
+      await click('Вернуть встроенный ключ')
+      await waitFor('window.mustplay.getPipelineStatus().then(x => x.settings.acoustidKeySource === "built-in")', 'key reset')
+      await click('Импорт и файлы')
+      const folders = 'document.querySelectorAll(".settings-folder")'
+      await waitFor(folders + '.length === 2', 'download folders ready')
+      for (let index = 0; index < 2; index++) {
+        const button = folders + `[${index}].querySelector(".text-button")`
+        await waitFor('!' + button + '.disabled', 'custom folder can be reset')
+        await run(button + '.click()')
+        await waitFor(button + '.disabled', 'system folder restored')
+      }
+      assert.equal((await run('window.mustplay.getPipelineStatus()')).settings.usesDefaultFolder, true)
+      assert.equal((await run('window.mustplay.getYandexSettings()')).usesDefaultFolder, true)
+      return
+    }
+
+    assert.deepEqual(await run('[...document.querySelectorAll(".section-nav button")].map(b => b.ariaLabel)'),
+      ['Библиотека', 'Поиск', 'Моя волна', 'Плейлисты', 'Импорт', 'Настройки'])
+    const initial = (await run('window.mustplay.getPipelineStatus()')).settings
+    assert.equal(initial.acoustidKeySource, 'built-in')
+    assert.equal(initial.usesDefaultFolder, true)
+    assert.equal(initial.folderAvailable, true)
+    assert.equal('acoustidKey' in initial || 'downloadDir' in initial, false)
+    assert.deepEqual(await run('window.mustplay.getMusicFolders()'), [])
+    await click('Импорт')
+    const navIcon = 'document.querySelector(".section-nav [data-section=import] svg")'
+    await waitFor(navIcon + '.getBoundingClientRect().width === 20', 'import navigation icon visible')
+    assert.equal(await run(navIcon + '.getAttribute("viewBox")'), '0 0 24 24')
+    assert.equal(await run('document.querySelector(".import-panel").innerText.includes("сборка")'), false)
+    assert.equal(await run('!!document.querySelector(".import-panel .settings-input")'), false)
+    const mark = 'document.querySelector(".import-provider-mark")'
+    const linkInput = '#import-url'
+    await waitFor(mark + '.querySelector("svg[data-icon=link]") !== null', 'empty link icon')
+    for (const [provider, url] of [
+      ['spotify', 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M'],
+      ['deezer', 'https://link.deezer.com/example'],
+      ['ytmusic', 'https://music.youtube.com/playlist?list=test'],
+      ['yandex', 'https://music.yandex.ru/album/123'],
+    ]) {
+      await setInput(linkInput, url)
+      await waitFor(mark + '.dataset.provider === ' + JSON.stringify(provider) +
+        ' && ' + mark + '.querySelector("img")?.naturalWidth > 0', 'recognized provider icon')
+      if (provider === 'spotify') await capture('01-import')
+      if (provider === 'ytmusic' || provider === 'yandex') {
+        assert.equal(await run('document.querySelector(".import-link-card [type=submit]").disabled'), true)
+      }
+    }
+    await setInput(linkInput, 'https://unsupported.invalid/playlist/x')
+    await waitFor(mark + '.dataset.provider === "unknown" && !!document.querySelector(".import-link-hint.is-error")', 'unknown provider')
+    await setInput(linkInput, 'https://open.spotify.com@unsupported.invalid/playlist/x')
+    await waitFor(mark + '.dataset.provider === "unknown"', 'malformed link stays neutral')
+
+    const section = 'section[aria-label="Поиск и загрузка Яндекс Музыки"]'
+    await click('Поиск')
+    await waitFor('document.querySelector(\'button[aria-label="Поиск"]\').getAttribute("aria-current") === "page"', 'search nav active')
+    await waitFor(`!!document.querySelector('${section}') && !document.querySelector('${section}').closest("[hidden]")`, 'search section visible')
+    await waitFor('!!document.querySelector(".service-notice")', 'connection prompt')
+    assert.equal(await run('document.querySelector(\'input[aria-label="Поиск треков в Яндекс Музыке"]\').disabled'), true)
+    assert.equal(await run('!!document.querySelector(\'input[aria-label="Токен Яндекс Музыки"]\')'), false)
+    await capture('02-search')
+    await click('Подключить в настройках')
+    const acoustid = 'document.querySelector(\'input[aria-label="Ключ AcoustID"]\')'
+    await waitFor(acoustid + ' && !' + acoustid + '.disabled', 'source settings ready')
+    assert.equal(await run(acoustid + '.type'), 'password')
+    assert.equal(await run(acoustid + '.value'), '')
+    assert.equal(await run('document.querySelector("#sources-heading").parentElement.innerText.includes("Используется встроенный ключ")'), true)
+    await capture('03-settings')
+    await setInput('input[aria-label="Ключ AcoustID"]', 'fixture-custom-key')
+    await click('Сохранить ключ')
+    await waitFor('window.mustplay.getPipelineStatus().then(x => x.settings.acoustidKeySource === "custom")', 'user key saved')
+    await waitFor(acoustid + '.value === ""', 'saved key absent from the form')
+
+    await click('Внешний вид')
+    const theme = 'select[aria-label="Тема оформления"]'
+    for (const value of ['light', 'system', 'dark']) {
+      await waitFor(`document.querySelector('${theme}')?.disabled === false`, 'theme picker ready')
+      await choose('Тема оформления', value)
+      await waitFor('window.mustplay.getThemePreference().then(x => x === ' + JSON.stringify(value) + ')', 'theme saved')
+      const expected = value === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : value
+      await waitFor('document.documentElement.dataset.theme === ' + JSON.stringify(expected), 'theme applied immediately')
+      if (value === 'light') await capture('04-light-theme')
+    }
+
+    await click('Импорт и файлы')
+    const folders = 'document.querySelectorAll(".settings-folder")'
+    await waitFor(folders + '.length === 2', 'download settings ready')
+    let defaultPaths = []
+    dialog.showOpenDialog = async (_owner, options) => {
+      defaultPaths.push(options.defaultPath)
+      return { canceled: false, filePaths: [folder] }
+    }
+    for (let index = 0; index < 2; index++) {
+      const chooseFolder = folders + `[${index}].querySelector(".secondary")`
+      await waitFor('!' + chooseFolder + '.disabled', 'folder picker ready')
+      await run(chooseFolder + '.click()')
+      await waitFor(folders + `[${index}].innerText.includes(${JSON.stringify(customFolderName)})`, 'custom folder shown')
+    }
+    assert.deepEqual(defaultPaths, [app.getPath('music'), app.getPath('music')])
+    await choose('Качество загрузки', 'lossless')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.quality === "lossless")', 'quality persisted')
+    await waitFor('!document.querySelector(\'select[aria-label="Формат текста песни"]\').disabled', 'settings idle after quality')
+    await choose('Формат текста песни', 'text')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.lyrics === "text")', 'lyrics format persisted')
+    await waitFor('!document.querySelector(\'input[aria-label="Встраивать обложку в файл"]\').disabled', 'settings idle after lyrics')
+    await run('document.querySelector(\'input[aria-label="Встраивать обложку в файл"]\').click()')
+    await waitFor('window.mustplay.getYandexSettings().then(settings => settings.embedCover === false)', 'cover setting persisted')
+    assert.deepEqual(await run('window.mustplay.getMusicFolders()'), [])
     return
   }
 
@@ -811,7 +1006,11 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
         window.mustplay.getSoundEffect(), window.mustplay.setSoundEffect('slowed'), window.mustplay.setReverb('slowed', true),
         window.mustplay.getDiscoMode(), window.mustplay.setDiscoMode(true), window.mustplay.publishDiscoBeat(1),
         ...(['getMusicFolders', 'removeMusicFolder', 'getCursorSettings', 'setCursorPreset', 'importCursorPreset',
-          'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
+          'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode', 'getThemePreference',
+          'resetPipelineFolder', 'resetYandexFolder',
+          'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
+          'chooseYandexFolder', ...(app.isPackaged && Number(app.getVersion().split('.')[1]) < 12 ? ['openYandexTokenPage'] : []), 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'getYandexDownloads'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)
     for (const refusal of refusals) assert.match(refusal, /IPC sender denied/)

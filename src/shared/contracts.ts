@@ -1,4 +1,26 @@
 export const channels = {
+  getPipelineStatus: 'pipeline:status',
+  savePipelineSettings: 'pipeline:save-settings',
+  choosePipelineFolder: 'pipeline:choose-folder',
+  resetPipelineFolder: 'pipeline:reset-folder',
+  installPipelineTools: 'pipeline:install-tools',
+  connectPipelineSpotify: 'pipeline:spotify-connect',
+  disconnectPipelineSpotify: 'pipeline:spotify-disconnect',
+  exchangePipelineSpotifyCode: 'pipeline:spotify-exchange-code',
+  startPipelineImport: 'pipeline:start',
+  getPipelineJob: 'pipeline:job',
+  cancelPipelineImport: 'pipeline:cancel',
+  clearPipelineHistory: 'pipeline:clear-history',
+  listPipelineJobs: 'pipeline:jobs',
+  retryPipelineItem: 'pipeline:retry-item',
+  skipPipelineItem: 'pipeline:skip-item',
+  openPipelineFolder: 'pipeline:open-folder',
+  openWebSource: 'pipeline:web-source-open',
+  getWebSourceState: 'pipeline:web-source-state',
+  setWebSourceBounds: 'pipeline:web-source-bounds',
+  closeWebSource: 'pipeline:web-source-close',
+  importWebSourcePlaylist: 'pipeline:web-source-import',
+  clearWebSourceData: 'pipeline:web-source-clear',
   getWaveQueue: 'recommendations:get-wave-queue',
   getWaveRecommendations: 'recommendations:get-wave-recommendations',
   getWaveMode: 'recommendations:get-mode',
@@ -6,6 +28,7 @@ export const channels = {
   getWavePulse: 'appearance:get-wave-pulse',
   setWavePulse: 'appearance:set-wave-pulse',
   setTheme: 'appearance:set-theme',
+  getThemePreference: 'appearance:get-theme',
   getCursorSettings: 'appearance:get-cursors',
   setCursorPreset: 'appearance:set-cursor',
   importCursorPreset: 'appearance:import-cursor',
@@ -39,8 +62,6 @@ export const channels = {
   getPlaybackSession: 'playback:get-session',
   setPlaybackSession: 'playback:set-session',
   getLyrics: 'lyrics:get',
-  getLyricsMode: 'lyrics:get-mode',
-  setLyricsMode: 'lyrics:set-mode',
   openMiniPlayer: 'mini:open',
   getMiniState: 'mini:get-state',
   publishMiniState: 'mini:publish-state',
@@ -56,6 +77,19 @@ export const channels = {
   getShortcuts: 'shortcuts:get',
   setShortcut: 'shortcuts:set',
   setShortcutCapture: 'shortcuts:set-capture',
+  getYandexSettings: 'yandex:get-settings',
+  setYandexToken: 'yandex:set-token',
+  setYandexQuality: 'yandex:set-quality',
+  setYandexLyrics: 'yandex:set-lyrics',
+  setYandexEmbedCover: 'yandex:set-embed-cover',
+  chooseYandexFolder: 'yandex:choose-folder',
+  resetYandexFolder: 'yandex:reset-folder',
+  yandexSearch: 'yandex:search',
+  yandexDownload: 'yandex:download',
+  yandexCancelDownload: 'yandex:cancel-download',
+  clearYandexHistory: 'yandex:clear-history',
+  getYandexDownloads: 'yandex:get-downloads',
+  yandexDownloads: 'yandex:downloads',
 } as const
 
 export const playerScheme = 'mustplay'
@@ -69,8 +103,8 @@ export interface CursorPreset {
 }
 export interface CursorSettings { selected: CursorPreset; presets: CursorPreset[] }
 
-export type LyricsMode = 'read' | 'sync'
 export type Theme = 'dark' | 'light'
+export type ThemePreference = Theme | 'system'
 export const themeBackground = { dark: '#15131a', light: '#f8f6fc' } satisfies Record<Theme, string>
 export const interfaceScales = [80, 90, 100, 110, 125, 150] as const
 export type InterfaceScale = typeof interfaceScales[number]
@@ -283,14 +317,84 @@ export interface PlaybackEvent extends PlaybackEventInput { timestamp: string }
 export interface ListeningData { preferences: TrackPreference[]; events: PlaybackEvent[] }
 export interface ListeningDataReader { getListeningData(): ListeningData }
 
+import type { PipelineJobView, PipelineJobSummary, PipelinePreferences, PipelineSettingsPatch, PipelineStatus, PipelineTools, WebSourceBounds, WebSourceProvider, WebSourceState } from './pipeline'
+
+export const yandexQualities = ['lq', 'nq', 'lossless'] as const
+export type YandexQuality = typeof yandexQualities[number]
+export const yandexLyricsFormats = ['none', 'text', 'lrc'] as const
+export type YandexLyricsFormat = typeof yandexLyricsFormats[number]
+
+export interface YandexSettings {
+  hasToken: boolean
+  quality: YandexQuality
+  lyrics: YandexLyricsFormat
+  embedCover: boolean
+  folderLabel: string
+  folderAvailable: boolean
+  usesDefaultFolder: boolean
+}
+
+export interface YandexTrack {
+  id: string
+  title: string
+  artist: string | null
+  album: string | null
+  durationSeconds: number | null
+  coverUrl: string | null
+  available: boolean
+}
+
+export interface YandexSearchResult {
+  tracks: YandexTrack[]
+  total: number
+  page: number
+  perPage: number
+}
+
+export type YandexDownloadStatus = 'queued' | 'downloading' | 'tagging' | 'complete' | 'error' | 'cancelled'
+export interface YandexDownload {
+  id: string
+  trackId: string
+  title: string
+  artist: string | null
+  status: YandexDownloadStatus
+  progress: number
+  receivedBytes: number
+  totalBytes: number
+  error: string | null
+}
+
 export interface MustplayApi {
+  getPipelineStatus(): Promise<PipelineStatus>
+  savePipelineSettings(settings: PipelineSettingsPatch): Promise<PipelinePreferences>
+  choosePipelineFolder(): Promise<PipelinePreferences | null>
+  resetPipelineFolder(): Promise<PipelinePreferences>
+  installPipelineTools(): Promise<PipelineTools>
+  connectPipelineSpotify(): Promise<{ url: string }>
+  disconnectPipelineSpotify(): Promise<void>
+  exchangePipelineSpotifyCode(code: string, state: string): Promise<boolean>
+  startPipelineImport(url: string): Promise<PipelineJobView>
+  getPipelineJob(id: string): Promise<PipelineJobView | null>
+  cancelPipelineImport(): Promise<void>
+  clearPipelineHistory(): Promise<void>
+  listPipelineJobs(): Promise<PipelineJobSummary[]>
+  retryPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
+  skipPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
+  openPipelineFolder(): Promise<void>
+  openWebSource(provider: WebSourceProvider): Promise<WebSourceState>
+  getWebSourceState(): Promise<WebSourceState>
+  setWebSourceBounds(bounds: WebSourceBounds): Promise<void>
+  closeWebSource(): Promise<void>
+  importWebSourcePlaylist(): Promise<PipelineJobView>
+  clearWebSourceData(): Promise<void>
   getWaveQueue(): Promise<string[]>
   getWaveRecommendations(): Promise<WaveRecommendations>
   getWaveMode(): Promise<WaveMode>
   setWaveMode(mode: WaveMode): Promise<void>
   getWavePulse(): Promise<number>
   setWavePulse(intensity: number): Promise<void>
-  setTheme(theme: Theme): Promise<void>
+  getThemePreference(): Promise<ThemePreference>
+  setTheme(theme: ThemePreference): Promise<void>
   getCursorSettings(): Promise<CursorSettings>
   setCursorPreset(id: string): Promise<CursorSettings>
   importCursorPreset(): Promise<CursorSettings | null>
@@ -323,8 +427,6 @@ export interface MustplayApi {
   getPlaybackSession(): Promise<PlaybackSession | null>
   setPlaybackSession(session: PlaybackSession): Promise<void>
   getLyrics(trackId: string): Promise<Lyrics | null>
-  getLyricsMode(): Promise<LyricsMode>
-  setLyricsMode(mode: LyricsMode): Promise<void>
   openMiniPlayer(): Promise<void>
   publishMiniState(state: MiniPlayback): Promise<void>
   onShowFullPlayer(callback: (open: boolean) => void): () => void
@@ -334,4 +436,17 @@ export interface MustplayApi {
   getShortcuts(): Promise<ShortcutBindings>
   setShortcut(action: ShortcutAction, accelerator: string | null): Promise<ShortcutResult>
   setShortcutCapture(capturing: boolean): Promise<void>
+  getYandexSettings(): Promise<YandexSettings>
+  setYandexToken(token: string): Promise<YandexSettings>
+  setYandexQuality(quality: YandexQuality): Promise<void>
+  setYandexLyrics(format: YandexLyricsFormat): Promise<void>
+  setYandexEmbedCover(enabled: boolean): Promise<void>
+  chooseYandexFolder(): Promise<YandexSettings>
+  resetYandexFolder(): Promise<YandexSettings>
+  yandexSearch(text: string, page: number): Promise<YandexSearchResult>
+  yandexDownload(trackId: string): Promise<YandexDownload>
+  yandexCancelDownload(id: string): Promise<void>
+  clearYandexHistory(): Promise<void>
+  getYandexDownloads(): Promise<YandexDownload[]>
+  onYandexDownloads(callback: (downloads: YandexDownload[]) => void): () => void
 }

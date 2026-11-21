@@ -131,6 +131,8 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
   webContents.focus()
   await focus('nav button[aria-label="Библиотека"]')
   key('Tab')
+  await waitFor('document.activeElement.getAttribute("aria-label") === "Поиск"', 'navigation is in the tab order')
+  key('Tab')
   await waitFor('document.activeElement.getAttribute("aria-label") === "Моя волна"', 'navigation is in the tab order')
   await waitFor('!document.querySelector(".play-button").disabled', 'keyboard play control is ready')
   await focus('footer .play-button')
@@ -298,6 +300,7 @@ export async function verifyInterface({ player, run, click, waitFor, waitForAudi
 
   await size(900, 700)
   await click('Настройки')
+  await click('Воспроизведение')
   const pulse = 'input[aria-label="Сила пульсации"]'
   await waitFor('document.querySelector(' + JSON.stringify(pulse) + ')?.disabled === false', 'pulse slider ready')
   await setInput(pulse, '0')

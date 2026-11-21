@@ -47,3 +47,19 @@ export function flacWithArtwork(audio: Buffer, image: Buffer): Buffer {
   const streamInfoEnd = 8 + audio.readUIntBE(5, 3)
   return Buffer.concat([audio.subarray(0, streamInfoEnd), header, picture, image, audio.subarray(streamInfoEnd)])
 }
+
+/** Extend the fixture's mdat without moving the AAC samples it points to. */
+export function m4aWithLargeMediaAtom(audio: Buffer): Buffer {
+  const head = Buffer.from(audio)
+  for (let offset = 0; offset + 8 <= head.length;) {
+    const size = head.readUInt32BE(offset)
+    if (size < 8 || offset + size > head.length) break
+    if (head.toString('latin1', offset + 4, offset + 8) === 'mdat') {
+      const padding = Buffer.alloc(8 * 1024 * 1024 + 17)
+      head.writeUInt32BE(size + padding.length, offset)
+      return Buffer.concat([head.subarray(0, offset + size), padding, head.subarray(offset + size)])
+    }
+    offset += size
+  }
+  throw new Error('Missing mdat in AAC fixture')
+}

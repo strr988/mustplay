@@ -3,6 +3,7 @@ import type { RefObject } from 'react'
 import type { WaveMode } from '../../shared/contracts'
 import { Icon } from './icons'
 import type { RecommendationExplanation } from './playback'
+import type { AudioEffects } from './audio-effects'
 import { WavePulse } from './wave-pulse'
 
 const modes: Record<WaveMode, { label: string; description: string }> = {
@@ -65,7 +66,7 @@ function Explanation({ value }: { value?: RecommendationExplanation }) {
   </details>
 }
 
-export function Wave({ mode, saving, changeMode, empty, unavailable, ready, active, playing, loading, visible, audio, pulseIntensity, title, notice, recommendation, start, openLibrary }: {
+export function Wave({ mode, saving, changeMode, empty, unavailable, ready, active, playing, loading, visible, audio, effects, pulseIntensity, title, notice, recommendation, start, openLibrary }: {
   mode: WaveMode | null
   saving: boolean
   changeMode: (mode: WaveMode) => void
@@ -76,6 +77,7 @@ export function Wave({ mode, saving, changeMode, empty, unavailable, ready, acti
   playing: boolean
   visible: boolean
   audio: RefObject<HTMLAudioElement | null>
+  effects: RefObject<AudioEffects | null>
   pulseIntensity: number
   loading: boolean
   title?: string
@@ -88,7 +90,7 @@ export function Wave({ mode, saving, changeMode, empty, unavailable, ready, acti
     active && title ? (playing ? 'Сейчас играет · ' : 'На паузе · ') + title : '')
   return <>
     <div className="wave-hero">
-      <WavePulse audio={audio} playing={visible && playing && !loading && pulseIntensity > 0} intensity={pulseIntensity} />
+      <WavePulse audio={audio} effects={effects} playing={visible && playing && !loading && pulseIntensity > 0} intensity={pulseIntensity} />
       <div className="wave-intro">
         <h1>Моя волна</h1>
         <p>Радио из вашей библиотеки. Подборка учитывает лайки, дослушивания и пропуски и обновляется по мере прослушивания.</p>

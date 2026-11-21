@@ -1,33 +1,35 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { defaultWavePulse } from '../../shared/contracts'
-import type { ImportIssue, MusicFolder, LibraryTrack, LyricsMode, Theme, TrackPreference, WaveMode } from '../../shared/contracts'
+import type { ImportIssue, MusicFolder, LibraryTrack, TrackPreference, WaveMode } from '../../shared/contracts'
 import { Icon } from './icons'
 import { useDesktopPlayback } from './desktop-playback'
 import { useCursorSettings } from './cursor'
 import { DiscoLayer, paintDisco, useDiscoMode } from './disco'
 import { FullPlayer } from './full-player'
 import { Library } from './library'
-import { LyricsPanel } from './lyrics-panel'
+import { LyricsDrawer, useTrackLyrics } from './lyrics-panel'
 import { useMediaControls } from './media-controls'
 import { Player } from './player'
-import { PlayerSettings } from './player-settings'
+import { PlayerSettings, type SettingsSection } from './player-settings'
 import { usePlayback } from './playback'
 import { Playlists } from './playlists'
 import { QueuePanel } from './queue-panel'
-import { ThemeToggle } from './theme-toggle'
+import { Search } from './search'
+import { ImportPanel } from './import-panel'
 import { Wave } from './wave'
 import { WindowTitle } from './window-title'
 
 const sections = [
   { id: 'library', label: 'Библиотека', icon: 'library' },
+  { id: 'search', label: 'Поиск', icon: 'search' },
   { id: 'wave', label: 'Моя волна', icon: 'wave' },
   { id: 'playlists', label: 'Плейлисты', icon: 'playlists' },
-  { id: 'lyrics', label: 'Текст песни', icon: 'lyrics' },
+  { id: 'import', label: 'Импорт', icon: 'import' },
   { id: 'settings', label: 'Настройки', icon: 'settings' },
 ] as const
 type Section = typeof sections[number]['id']
 
-export function App({ initialTheme }: { initialTheme: Theme }) {
+export function App() {
   const [tracks, setTracks] = useState<LibraryTrack[]>([])
   const [libraryLoading, setLibraryLoading] = useState(true)
   const [libraryLoadFailed, setLibraryLoadFailed] = useState(false)
@@ -37,25 +39,14 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   const [issues, setIssues] = useState<ImportIssue[]>([])
   const [notice, setNotice] = useState('')
   const [section, setSection] = useState<Section>('library')
-  const [lyricsMode, updateLyricsMode] = useState<LyricsMode>('read')
-  const lyricsRevision = useRef(0)
-  useEffect(() => {
-    let active = true
-    void window.mustplay.getLyricsMode().then(mode => {
-      if (active && !lyricsRevision.current) updateLyricsMode(mode)
-    }).catch(() => { if (active) setNotice('Не удалось загрузить режим текста.') })
-    return () => { active = false }
-  }, [])
-  function setLyricsMode(mode: LyricsMode) {
-    const revision = ++lyricsRevision.current
-    updateLyricsMode(mode)
-    void window.mustplay.setLyricsMode(mode).catch(() => {
-      if (revision === lyricsRevision.current) setNotice('Не удалось сохранить режим текста.')
-    })
-  }
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('appearance')
   const [folders, setFolders] = useState<MusicFolder[]>([])
   const [folderListError, setFolderListError] = useState(false)
-  const beforeLyrics = useRef<Section>('library')
+  const [side, setSide] = useState<'queue' | 'lyrics' | null>(null)
+  const queueOpen = side === 'queue'
+  const lyricsOpen = side === 'lyrics'
+  const [startWithLyrics, setStartWithLyrics] = useState(false)
+  const returnFromFullscreen = useRef<HTMLElement | null>(null)
   const lyricsButton = useRef<HTMLButtonElement>(null)
   const fullPlayerButton = useRef<HTMLButtonElement>(null)
   const fullDialog = useRef<HTMLDialogElement>(null)
@@ -64,6 +55,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   const openingFullPlayer = useRef(false)
   const ownsFullscreen = useRef(false)
   const [playlistRequest, setPlaylistRequest] = useState<{ trackId: string; sequence: number }>()
+  const [playlistOpen, setPlaylistOpen] = useState<{ id: string; play: boolean; sequence: number }>()
   const libraryLink = useRef<HTMLButtonElement>(null)
   const content = useRef<HTMLElement>(null)
   const trackRead = useRef(0)
@@ -85,10 +77,11 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     paintDisco(fullDiscoLayer.current, !miniVisible && fullPlayerOpen ? strength : 0)
   })
 
-  const [queueOpen, setQueueOpen] = useState(false)
+  const lyrics = useTrackLyrics(playback.track, lyricsOpen || fullPlayerOpen)
   const [compactQueue, setCompactQueue] = useState(() => window.matchMedia('(width < 1080px)').matches)
   const queueButton = useRef<HTMLButtonElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
+  const lyricsCloseButton = useRef<HTMLButtonElement>(null)
   const [waveMode, setWaveMode] = useState<WaveMode | null>(null)
   const [wavePulse, setWavePulse] = useState<number | null>(null)
   const pulseWrite = useRef(0)
@@ -107,19 +100,22 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
 
   useLayoutEffect(() => {
     if (queueOpen) closeButton.current?.focus()
-  }, [queueOpen, compactQueue])
+    if (lyricsOpen) lyricsCloseButton.current?.focus()
+  }, [queueOpen, lyricsOpen, compactQueue])
 
   useEffect(() => {
-    if (!queueOpen || fullPlayerOpen) return
+    if (!side || fullPlayerOpen) return
     const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
+      if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector(':popover-open')) {
         event.preventDefault()
-        closeQueue()
+        const trigger = side === 'queue' ? queueButton : lyricsButton
+        setSide(null)
+        trigger.current?.focus()
       }
     }
     window.addEventListener('keydown', escape)
     return () => window.removeEventListener('keydown', escape)
-  }, [queueOpen, fullPlayerOpen])
+  }, [side, fullPlayerOpen])
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -135,13 +131,16 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     else void closeFullPlayer()
   }), [])
 
-  function openFullPlayer(fromMini = false) {
+  function openFullPlayer(fromMini = false, withLyrics = false) {
     const dialog = fullDialog.current
     if (!dialog || dialog.open || openingFullPlayer.current) return
+    returnFromFullscreen.current = withLyrics && document.activeElement instanceof HTMLElement
+      ? document.activeElement : fullPlayerButton.current
     function show() {
       openingFullPlayer.current = false
       if (!dialog?.isConnected) return
       dialog.showModal()
+      setStartWithLyrics(withLyrics)
       setFullPlayerOpen(true)
     }
     if (fromMini || document.fullscreenElement || !document.fullscreenEnabled) {
@@ -166,7 +165,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
       nativeFullscreen.current = false
       await window.mustplay.exitMiniFullscreen().catch(() => {})
     }
-    fullPlayerButton.current?.focus()
+    returnFromFullscreen.current?.focus()
   }
 
   function openMini() {
@@ -175,26 +174,32 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
   }
 
   function closeQueue() {
-    setQueueOpen(false)
+    setSide(null)
     queueButton.current?.focus()
   }
 
   function openSection(next: Section) {
     if (next !== section) content.current?.scrollTo(0, 0)
     setSection(next)
-    if (queueOpen && compactQueue) setQueueOpen(false)
+    if (side && compactQueue) setSide(null)
     if (next !== section && (next === 'library' || next === 'playlists')) void refreshTracks()
   }
 
-  function toggleTextMusic() {
-    if (section === 'lyrics' && lyricsMode === 'sync') {
-      openSection(beforeLyrics.current)
-      lyricsButton.current?.focus()
-      return
-    }
-    if (section !== 'lyrics') beforeLyrics.current = section
-    setLyricsMode('sync')
-    openSection('lyrics')
+  /** Opens the playlist an import just created, optionally starting playback. */
+  function openImportedPlaylist(playlistId: string, play: boolean) {
+    setPlaylistOpen({ id: playlistId, play, sequence: Date.now() })
+    openSection('playlists')
+  }
+
+  function closeLyrics() {
+    setSide(null)
+    lyricsButton.current?.focus()
+  }
+
+  function openSettings(target: SettingsSection) {
+    setSettingsSection(target)
+    content.current?.scrollTo(0, 0)
+    openSection('settings')
   }
 
   useEffect(() => {
@@ -348,7 +353,7 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     }
   }
 
-  const covered = queueOpen && compactQueue
+  const covered = side !== null && compactQueue
   const likeDisabled = !preferencesReady
   const playerControls = {
     playback, hasTracks: canPlay, liked: !!playback.track && likedTrackIds.has(playback.track.id),
@@ -360,16 +365,10 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
     <div className="workspace">
       <nav className="section-nav" aria-label="Разделы" inert={covered}>
         {sections.map(item => <button key={item.id} ref={item.id === "library" ? libraryLink : undefined} type="button" aria-label={item.label} title={item.label}
-          aria-current={section === item.id ? 'page' : undefined} onClick={() => {
-            if (item.id === 'lyrics' && section !== 'lyrics') {
-              beforeLyrics.current = section
-            }
-            openSection(item.id)
-          }}
+          aria-current={section === item.id ? 'page' : undefined} data-section={item.id} onClick={() => openSection(item.id)}
           disabled={item.id === 'playlists' && (libraryLoading || scan !== null)}>
           <Icon name={item.icon} /><span>{item.label}</span>
         </button>)}
-        <ThemeToggle initialTheme={initialTheme} reportError={setNotice} />
       </nav>
       <div className="content-frame">
         <main className="content" ref={content} inert={covered}>
@@ -387,40 +386,43 @@ export function App({ initialTheme }: { initialTheme: Theme }) {
                   openSection('playlists')
                 }} />
             </div>
+            <div hidden={section !== 'import'}>
+              <ImportPanel active={section === 'import'} openSettings={openSettings} onOpenPlaylist={openImportedPlaylist} onLibraryChanged={refreshTracks} />
+            </div>
             <div hidden={section !== 'wave'}>
               <Wave mode={waveMode} saving={savingWaveMode} changeMode={mode => void changeWaveMode(mode)}
                 empty={!libraryLoading && !libraryLoadFailed && tracks.length === 0}
                 unavailable={tracks.length > 0 && !anyAvailable} ready={playback.ready && !scan && !libraryLoading && !libraryLoadFailed}
                 active={playback.mode === 'wave'} playing={playback.playing} loading={playback.loading}
                 visible={section === 'wave' && !fullPlayerOpen} audio={playback.audioProps.ref}
-                pulseIntensity={wavePulse ?? defaultWavePulse}
+                effects={playback.audioEffects} pulseIntensity={wavePulse ?? defaultWavePulse}
                 recommendation={playback.recommendation}
                 title={playback.track?.title} notice={playback.waveNotice} start={playback.startWave}
                 openLibrary={() => { openSection('library'); libraryLink.current?.focus() }} />
             </div>
             <div hidden={section !== 'playlists'}>
               <Playlists active={section === 'playlists'} tracks={tracks} playbackReady={playback.ready && !playback.loading}
-                request={playlistRequest} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
+                request={playlistRequest} openRequest={playlistOpen} onPlay={playback.startPlaylist} refreshTracks={refreshTracks} onQueue={playback.addToQueue} />
             </div>
-            <div hidden={section !== 'lyrics'}>
-              <LyricsPanel key={JSON.stringify([playback.track?.id, playback.track?.artworkUrl, playback.track?.available])}
-                track={playback.track} active={section === 'lyrics' && !fullPlayerOpen} audio={playback.audioProps.ref}
-                mode={lyricsMode} changeMode={setLyricsMode} close={toggleTextMusic}
-                canSeek={playback.duration !== null && !playback.loading} seek={playback.seek} />
+            <div hidden={section !== 'search'}>
+              <Search active={section === 'search'} openSettings={openSettings} />
             </div>
             {section === 'settings' && <PlayerSettings wavePulse={wavePulse} cursor={cursor}
-              changeWavePulse={changeWavePulse} disco={disco} />}
+              changeWavePulse={changeWavePulse} disco={disco} playback={playback}
+              section={settingsSection} selectSection={openSettings} />}
           </div>
         </main>
         {playback.error && <p className="playback-error" role="alert">{playback.error}</p>}
       </div>
-      {covered && <div className="queue-scrim" aria-hidden="true" onClick={closeQueue} />}
+      {covered && <div className="queue-scrim" aria-hidden="true" onClick={side === 'queue' ? closeQueue : closeLyrics} />}
       <QueuePanel playback={playback} open={queueOpen} close={closeQueue} closeButton={closeButton} />
+      {lyricsOpen && <LyricsDrawer track={playback.track} result={lyrics} close={closeLyrics} closeButton={lyricsCloseButton}
+        openTextMusic={() => openFullPlayer(false, true)} />}
     </div>
     <Player {...playerControls} openMini={openMini} fullPlayerButton={fullPlayerButton} openFullPlayer={() => openFullPlayer()}
-      queueOpen={queueOpen} queueButton={queueButton} toggleQueue={() => queueOpen ? closeQueue() : setQueueOpen(true)}
-      textMusicOpen={section === 'lyrics' && lyricsMode === 'sync'} textMusicButton={lyricsButton} toggleTextMusic={toggleTextMusic} />
-    <FullPlayer {...playerControls} disco={disco} dialog={fullDialog} open={fullPlayerOpen}
+      queueOpen={queueOpen} queueButton={queueButton} toggleQueue={() => queueOpen ? closeQueue() : setSide('queue')}
+      lyricsOpen={lyricsOpen} lyricsButton={lyricsButton} toggleLyrics={() => lyricsOpen ? closeLyrics() : setSide('lyrics')} />
+    <FullPlayer {...playerControls} disco={disco} dialog={fullDialog} open={fullPlayerOpen} lyrics={lyrics} startWithLyrics={startWithLyrics}
       discoLayer={disco.enabled ? <DiscoLayer ref={fullDiscoLayer} /> : null} close={() => void closeFullPlayer()}
       openMini={() => void closeFullPlayer().then(openMini)} />
     <p className="sr-only" role="status">Треков в очереди: {playback.queue.pending.length}</p>

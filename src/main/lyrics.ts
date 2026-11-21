@@ -1,15 +1,13 @@
-import { audioMime } from './audio-formats'
+import { parseSourceTags } from './source-tags'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { extname } from 'node:path'
-import { LyricsContentType, parseStream, TimestampFormat } from 'music-metadata'
+import { LyricsContentType, TimestampFormat } from 'music-metadata'
 import type { FileHandle } from 'node:fs/promises'
 import type { Lyrics } from '../shared/contracts'
 import type { Library } from './library'
 import type { LocalSource } from './library-store'
 import { sameFile } from './local-file'
 import { cleanText, lyricLineLimit, lyricSizeLimit, parseLrc, plainLyrics, timedLyrics } from './lyric-text'
-
-const probeLimit = 8 * 1024 * 1024
 
 async function readSidecar(path: string): Promise<string | null> {
   try {
@@ -31,15 +29,10 @@ async function readSidecar(path: string): Promise<string | null> {
 }
 
 async function readEmbedded(file: FileHandle, source: LocalSource): Promise<Lyrics | null> {
-  const size = Math.min(probeLimit, Number(source.identity.size))
-  if (size <= 0) return null
-  const stream = file.createReadStream({ start: 0, end: size - 1, autoClose: false })
   try {
-    const mimeType = audioMime[source.format]
-    const { common, native } = await parseStream(stream, { mimeType, size }, {
-      skipCovers: true, maxMemoryAllocation: probeLimit, maxMetadataEntries: 10_000,
-    })
-    if (!sameFile(source.identity, await file.stat({ bigint: true }))) return null
+    const tags = await parseSourceTags(file, source, { skipCovers: true, maxMetadataEntries: 10_000 })
+    if (!tags) return null
+    const { common, native } = tags
     // Preserve the original Vorbis text, since the tag parser normalizes simple LRC.
     let plain: Lyrics | null = null
     for (const { id, value } of native.vorbis ?? []) {
@@ -68,8 +61,6 @@ async function readEmbedded(file: FileHandle, source: LocalSource): Promise<Lyri
     return plain
   } catch {
     return null
-  } finally {
-    stream.destroy()
   }
 }
 

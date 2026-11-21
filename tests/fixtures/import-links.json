@@ -1,0 +1,430 @@
+[
+  {
+    "why": "публичный сет SoundCloud",
+    "url": "https://soundcloud.com/forss/sets/soulhack",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "секретный сет SoundCloud с токеном s- в адресе",
+    "url": "https://soundcloud.com/argonaut-398318058/sets/itsnotsobaddd/s-4xa2CO70vA7?si=bab7afb2398c4d7886cca8d3daaa42d6",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "сет SoundCloud с utm-метками и si",
+    "url": "https://soundcloud.com/user-123/sets/name?si=abc&utm_source=clipboard&utm_medium=text",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "сет SoundCloud без протокола",
+    "url": "soundcloud.com/forss/sets/soulhack",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "сет SoundCloud с завершающим слешем",
+    "url": "https://soundcloud.com/forss/sets/soulhack/",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "сет SoundCloud на мобильном поддомене",
+    "url": "https://m.soundcloud.com/forss/sets/soulhack",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "сет SoundCloud в верхнем регистре",
+    "url": "HTTPS://SOUNDCLOUD.COM/FORSS/SETS/SOULHACK",
+    "provider": "soundcloud",
+    "kind": "set",
+    "supported": true
+  },
+  {
+    "why": "короткая ссылка on.soundcloud.com",
+    "url": "https://on.soundcloud.com/abc123?si=xyz",
+    "provider": "soundcloud",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "короткая ссылка on.soundcloud.com в верхнем регистре",
+    "url": "https://ON.SOUNDCLOUD.COM/SHORT",
+    "provider": "soundcloud",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "мобильная короткая ссылка SoundCloud",
+    "url": "https://soundcloud.app.goo.gl/abc123",
+    "provider": "soundcloud",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "трек SoundCloud",
+    "url": "https://soundcloud.com/forss/soulhack",
+    "provider": "soundcloud",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "профиль SoundCloud",
+    "url": "https://soundcloud.com/forss",
+    "provider": "soundcloud",
+    "kind": "profile",
+    "supported": false
+  },
+  {
+    "why": "любимые треки SoundCloud",
+    "url": "https://soundcloud.com/forss/likes",
+    "provider": "soundcloud",
+    "kind": "liked",
+    "supported": false
+  },
+  {
+    "why": "корень SoundCloud",
+    "url": "https://soundcloud.com/",
+    "provider": "soundcloud",
+    "kind": "profile",
+    "supported": false
+  },
+  {
+    "why": "плейлист Deezer",
+    "url": "https://www.deezer.com/playlist/1234567",
+    "provider": "deezer",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Deezer с языком в пути",
+    "url": "https://www.deezer.com/ru/playlist/1234567",
+    "provider": "deezer",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Deezer с utm-метками",
+    "url": "https://www.deezer.com/playlist/1234567?utm_source=deezer&deezer_user_id=1",
+    "provider": "deezer",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Deezer на мобильном поддомене",
+    "url": "https://m.deezer.com/playlist/1234567",
+    "provider": "deezer",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Deezer без www",
+    "url": "https://deezer.com/playlist/1234567",
+    "provider": "deezer",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "альбом Deezer",
+    "url": "https://www.deezer.com/album/302127",
+    "provider": "deezer",
+    "kind": "album",
+    "supported": false
+  },
+  {
+    "why": "трек Deezer",
+    "url": "https://www.deezer.com/track/3135556",
+    "provider": "deezer",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "артист Deezer",
+    "url": "https://www.deezer.com/artist/27",
+    "provider": "deezer",
+    "kind": "artist",
+    "supported": false
+  },
+  {
+    "why": "профиль Deezer",
+    "url": "https://www.deezer.com/profile/123",
+    "provider": "deezer",
+    "kind": "profile",
+    "supported": false
+  },
+  {
+    "why": "короткая ссылка link.deezer.com",
+    "url": "https://link.deezer.com/s/abc123",
+    "provider": "deezer",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "короткая ссылка deezer.page.link",
+    "url": "https://deezer.page.link/abc123",
+    "provider": "deezer",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "плейлист Spotify",
+    "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Spotify с языком и si",
+    "url": "https://open.spotify.com/intl-ru/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc123",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Spotify в виде URI",
+    "url": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Spotify в профиле пользователя",
+    "url": "https://open.spotify.com/user/spotify/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Spotify на play.spotify.com",
+    "url": "https://play.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "плейлист Spotify без поддомена",
+    "url": "https://spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    "provider": "spotify",
+    "kind": "playlist",
+    "supported": true
+  },
+  {
+    "why": "альбом Spotify",
+    "url": "https://open.spotify.com/album/1ATL5GLyefJaxhQzSPVrLX",
+    "provider": "spotify",
+    "kind": "album",
+    "supported": false
+  },
+  {
+    "why": "трек Spotify",
+    "url": "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+    "provider": "spotify",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "трек Spotify в виде URI",
+    "url": "spotify:track:4cOdK2wGLETKBW3PvgPWqT",
+    "provider": "spotify",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "артист Spotify",
+    "url": "https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02",
+    "provider": "spotify",
+    "kind": "artist",
+    "supported": false
+  },
+  {
+    "why": "коллекция Spotify",
+    "url": "https://open.spotify.com/collection/tracks",
+    "provider": "spotify",
+    "kind": "profile",
+    "supported": false
+  },
+  {
+    "why": "короткая ссылка spotify.link",
+    "url": "https://spotify.link/abc123",
+    "provider": "spotify",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "короткая ссылка spoti.fi",
+    "url": "https://spoti.fi/abc123",
+    "provider": "spotify",
+    "kind": "profile",
+    "supported": true,
+    "short": true
+  },
+  {
+    "why": "плейлист Яндекс Музыки",
+    "url": "https://music.yandex.ru/users/demo/playlists/1",
+    "provider": "yandex",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "плейлист Яндекс Музыки на yandex.com",
+    "url": "https://music.yandex.com/users/demo/playlists/1",
+    "provider": "yandex",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "плейлист Яндекс Музыки на yandex.by",
+    "url": "https://music.yandex.by/users/demo/playlists/1",
+    "provider": "yandex",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "альбом Яндекс Музыки",
+    "url": "https://music.yandex.ru/album/123/track/456",
+    "provider": "yandex",
+    "kind": "album",
+    "supported": false
+  },
+  {
+    "why": "трек Яндекс Музыки",
+    "url": "https://music.yandex.ru/track/456",
+    "provider": "yandex",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "видео YouTube",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "provider": "ytmusic",
+    "kind": "track",
+    "supported": false
+  },
+  {
+    "why": "плейлист YouTube Music",
+    "url": "https://music.youtube.com/playlist?list=OLAK5uy_kExample",
+    "provider": "ytmusic",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "плейлист обычного YouTube",
+    "url": "https://www.youtube.com/playlist?list=PL1234567890",
+    "provider": "ytmusic",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "короткая ссылка youtu.be",
+    "url": "https://youtu.be/dQw4w9WgXcQ?si=abc",
+    "provider": "ytmusic",
+    "kind": "profile",
+    "supported": false,
+    "short": true
+  },
+  {
+    "why": "плейлист ВК Музыки",
+    "url": "https://vk.com/music/playlist/123_456",
+    "provider": "vk",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "альбом ВК Музыки",
+    "url": "https://vk.com/music/album/123_456",
+    "provider": "vk",
+    "kind": "album",
+    "supported": false
+  },
+  {
+    "why": "короткая ссылка vk.cc",
+    "url": "https://vk.cc/abc123",
+    "provider": "vk",
+    "kind": "profile",
+    "supported": false,
+    "short": true
+  },
+  {
+    "why": "плейлист Apple Music",
+    "url": "https://music.apple.com/us/playlist/name/pl.abc123",
+    "provider": "apple",
+    "kind": "playlist",
+    "supported": false
+  },
+  {
+    "why": "альбом Apple Music",
+    "url": "https://music.apple.com/ru/album/name/123456?i=789",
+    "provider": "apple",
+    "kind": "album",
+    "supported": false
+  },
+  {
+    "why": "неизвестный домен",
+    "url": "https://example.com/playlist/1",
+    "provider": null
+  },
+  {
+    "why": "домен, маскирующийся под SoundCloud",
+    "url": "https://soundcloud.com.evil.example/forss/sets/x",
+    "provider": null
+  },
+  {
+    "why": "домен, маскирующийся под Deezer",
+    "url": "https://deezer.com.evil.example/playlist/1",
+    "provider": null
+  },
+  {
+    "why": "домен, маскирующийся под Spotify",
+    "url": "https://open.spotify.com.evil.example/playlist/abc",
+    "provider": null
+  },
+  {
+    "why": "похожий домен SoundCloud",
+    "url": "https://evil-soundcloud.com/forss/sets/x",
+    "provider": null
+  },
+  {
+    "why": "локальный файл",
+    "url": "file:///C:/music/playlist.mp3",
+    "provider": null
+  },
+  {
+    "why": "javascript-схема",
+    "url": "javascript://alert(1)",
+    "provider": null
+  },
+  {
+    "why": "ftp-схема",
+    "url": "ftp://soundcloud.com/forss/sets/x",
+    "provider": null
+  },
+  {
+    "why": "пустая строка",
+    "url": "",
+    "provider": null
+  },
+  {
+    "why": "пробелы вместо ссылки",
+    "url": "   ",
+    "provider": null
+  },
+  {
+    "why": "не адрес",
+    "url": "not a url",
+    "provider": null
+  }
+]

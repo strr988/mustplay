@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { audioFormats, builtInCursors, defaultInterfaceScale, defaultSoundSettings, defaultWavePulse, interfaceScales, maxWavePulse, playerOrigin, playlistNameLimit, soundEffects } from '../shared/contracts'
-import type { CursorPreset, CursorSettings, LyricsMode, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import type { CursorPreset, CursorSettings, Track, LibraryTrack, ListeningData, ListeningDataReader, PlaybackEventInput, PlaybackSession, Playlist, TrackPreference, VolumePreference, WaveMode } from '../shared/contracts'
+import type { PipelineJob } from '../shared/pipeline'
 import type { FileIdentity } from './local-file'
 import { validatePlaybackSession } from './playback-session'
 import { removeLegacyDemo } from './legacy-demo'
-import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, Theme } from '../shared/contracts'
+import type { InterfaceScale, ShortcutAction, SoundEffect, SoundSettings, ThemePreference, YandexLyricsFormat, YandexQuality } from '../shared/contracts'
 
 const migrations = [
   `CREATE TABLE tracks (
@@ -105,7 +106,82 @@ const migrations = [
     enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
   ) STRICT;`,
   migrateAudioFormats,
+  `CREATE TABLE IF NOT EXISTS isrc_cache (
+    isrc TEXT PRIMARY KEY NOT NULL CHECK (length(isrc) = 12),
+    track_id TEXT,
+    file_path TEXT NOT NULL,
+    source TEXT NOT NULL,
+    verified_at TEXT NOT NULL
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS fingerprint_cache (
+    fingerprint TEXT PRIMARY KEY NOT NULL,
+    isrc TEXT NOT NULL CHECK (length(isrc) = 12),
+    verified_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS fingerprint_cache_isrc ON fingerprint_cache(isrc);`,
+  `CREATE TABLE IF NOT EXISTS pipeline_jobs (
+    id TEXT PRIMARY KEY NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;`,
+  `CREATE TABLE yandex_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    token BLOB,
+    token_encrypted INTEGER NOT NULL CHECK (token_encrypted IN (0, 1)),
+    quality TEXT NOT NULL CHECK (quality IN ('lq', 'nq', 'lossless')),
+    lyrics TEXT NOT NULL CHECK (lyrics IN ('none', 'text', 'lrc')),
+    embed_cover INTEGER NOT NULL CHECK (embed_cover IN (0, 1)),
+    folder TEXT
+  ) STRICT;
+  INSERT INTO yandex_settings (id, token, token_encrypted, quality, lyrics, embed_cover, folder)
+    VALUES (1, NULL, 0, 'nq', 'lrc', 1, NULL);`,
+  `ALTER TABLE appearance_settings RENAME COLUMN theme TO previous_theme;
+  ALTER TABLE appearance_settings ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'
+    CHECK (theme IN ('dark', 'light', 'system'));
+  UPDATE appearance_settings SET theme = previous_theme;
+  ALTER TABLE appearance_settings DROP COLUMN previous_theme;`,
 ]
+
+/**
+ * Stable names for the migrations above, in the same order. A database records
+ * which names it has run, so two lines that added different migrations at the
+ * same index can be merged without guessing from `user_version` alone. Never
+ * rename an entry: an old database would replay that migration.
+ */
+const migrationNames = [
+  'tracks-and-sources',
+  'preferences-and-events',
+  'playback-volume',
+  'playlists',
+  'playback-session',
+  'mini-player-shortcuts',
+  'remove-legacy-demo',
+  'appearance-settings',
+  'theme',
+  'interface-scale-effect',
+  'disco-reverb',
+  'audio-formats',
+  'isrc-fingerprint-cache',
+  'pipeline-jobs',
+  'yandex-settings',
+  'system-theme',
+] as const
+
+if (migrationNames.length !== migrations.length) {
+  throw new Error('Migration names do not match the migration list')
+}
+
+/**
+ * Proof that a tail migration already ran on a database created by an older
+ * build. Both 0.9.0 and 0.11.0 added one migration after `audio-formats`, so a
+ * plain `user_version` prefix would replay the wrong one; the created table
+ * tells them apart.
+ */
+const migrationTableProbes: Partial<Record<(typeof migrationNames)[number], string>> = {
+  'isrc-fingerprint-cache': 'isrc_cache',
+  'pipeline-jobs': 'pipeline_jobs',
+  'yandex-settings': 'yandex_settings',
+}
 
 function migrateAudioFormats(db: DatabaseSync): void {
   db.exec(`CREATE TABLE tracks_new (
@@ -195,54 +271,108 @@ export class LibraryStore implements ListeningDataReader {
   constructor(path: string) {
     this.db = new DatabaseSync(path, { enableForeignKeyConstraints: true, timeout: 1_000 })
     try {
-      const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
-      if (version < 0 || version > migrations.length) throw new Error(`Unsupported library schema ${version}`)
-      if (version > 0 && version < migrations.length && path !== ':memory:') {
-        const backupPath = `${path}.v${version}-${randomUUID()}.backup`
-        this.db.prepare('VACUUM INTO ?').run(backupPath)
-        using backup = new DatabaseSync(backupPath, { readOnly: true })
-        if (backup.prepare('PRAGMA user_version').get()?.user_version !== version ||
-            backup.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') {
-          throw new Error('Library backup verification failed')
-        }
-      }
-      const audioMigration = migrations.indexOf(migrateAudioFormats)
-      const upgrade = (from: number, to: number) => this.transaction(() => {
-        for (let index = from; index < to; index++) {
-          const migration = migrations[index]
-          if (typeof migration === 'string') this.db.exec(migration)
-          else migration(this.db)
-          this.db.exec(`PRAGMA user_version = ${index + 1}`)
-        }
-        if (from === audioMigration && this.db.prepare('PRAGMA foreign_key_check').get()) {
-          throw new Error('Invalid library references')
-        }
-      })
-      if (version < audioMigration) upgrade(version, audioMigration)
-      if (version <= audioMigration) {
-        // Rebuild the parent table without cascading deletes. Earlier migrations still enforce foreign keys.
-        this.db.exec('PRAGMA foreign_keys = OFF')
-        upgrade(audioMigration, audioMigration + 1)
-        this.db.exec('PRAGMA foreign_keys = ON')
-      }
-      if (migrations.length > audioMigration + 1) upgrade(Math.max(version, audioMigration + 1), migrations.length)
+      this.ensureSchema(path)
     } catch (error) {
       this.db.close()
       throw error
     }
   }
 
+  /**
+   * Brings any library — fresh, from 0.9.0 or from 0.10.0 — to the current
+   * schema. `schema_migrations` records names, so both lines that added a
+   * migration after `audio-formats` can share one list without replaying each
+   * other's work.
+   */
+  private ensureSchema(path: string): void {
+    const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
+    if (version < 0 || version > migrations.length) throw new Error(`Unsupported library schema ${version}`)
+    if (version > 0 && version < migrations.length && path !== ':memory:') {
+      const backupPath = `${path}.v${version}-${randomUUID()}.backup`
+      this.db.prepare('VACUUM INTO ?').run(backupPath)
+      using backup = new DatabaseSync(backupPath, { readOnly: true })
+      if (backup.prepare('PRAGMA user_version').get()?.user_version !== version ||
+          backup.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') {
+        throw new Error('Library backup verification failed')
+      }
+    }
+
+    const tableExists = (name: string) =>
+      Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
+
+    // A fresh database (or one from before this table existed) has no records.
+    // The table is created lazily, inside the first migration's transaction, so
+    // a failed upgrade still leaves no trace.
+    let recordsReady = tableExists('schema_migrations')
+    const applied = new Set<string>(
+      recordsReady
+        ? (this.db.prepare('SELECT name FROM schema_migrations').all() as { name: string }[]).map(row => row.name)
+        : [],
+    )
+
+    // Every line shares the migrations up to and including `audio-formats`;
+    // beyond it, the created table proves what an older build already ran.
+    const shared = migrationNames.indexOf('audio-formats') + 1
+    const adopted: string[] = []
+    const adopt = (name: string) => {
+      applied.add(name)
+      adopted.push(name)
+    }
+    for (let index = 0; index < Math.min(version, shared); index++) {
+      if (!applied.has(migrationNames[index])) adopt(migrationNames[index])
+    }
+    for (let index = shared; index < migrationNames.length; index++) {
+      const name = migrationNames[index]
+      const table = migrationTableProbes[name]
+      if (!applied.has(name) && table && tableExists(table)) adopt(name)
+    }
+
+    const writeRecords = () => {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+        name TEXT PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      ) STRICT;`)
+      const insert = this.db.prepare('INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)')
+      const at = new Date().toISOString()
+      for (const name of adopted) insert.run(name, at)
+    }
+    const record = (name: string) => this.db
+      .prepare('INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)')
+      .run(name, new Date().toISOString())
+
+    const audioMigration = migrations.indexOf(migrateAudioFormats)
+    for (let index = 0; index < migrations.length; index++) {
+      const name = migrationNames[index]
+      if (applied.has(name)) continue
+      const migration = migrations[index]
+      const rebuildsTracks = index === audioMigration
+      // A table rebuild must happen with foreign keys off, and PRAGMA is a
+      // no-op inside a transaction, so switch it around the transaction.
+      if (rebuildsTracks) this.db.exec('PRAGMA foreign_keys = OFF')
+      try {
+        this.transaction(() => {
+          if (!recordsReady) writeRecords()
+          if (typeof migration === 'string') this.db.exec(migration)
+          else migration(this.db)
+          if (rebuildsTracks && this.db.prepare('PRAGMA foreign_key_check').get()) {
+            throw new Error('Invalid library references')
+          }
+          record(name)
+        })
+        recordsReady = true
+      } finally {
+        if (rebuildsTracks) this.db.exec('PRAGMA foreign_keys = ON')
+      }
+    }
+    if (!recordsReady) this.transaction(writeRecords)
+    this.db.exec(`PRAGMA user_version = ${migrations.length}`)
+  }
+
   close(): void {
     this.db.close()
   }
 
-  getLyricsMode(): LyricsMode {
-    return this.db.prepare('SELECT lyrics_mode FROM appearance_settings WHERE id = 1').get()?.lyrics_mode === 'sync' ? 'sync' : 'read'
-  }
 
-  setLyricsMode(mode: LyricsMode): void {
-    this.db.prepare('UPDATE appearance_settings SET lyrics_mode = ? WHERE id = 1').run(mode)
-  }
 
   getCursorSettings(): CursorSettings {
     const custom = this.db.prepare('SELECT id, label, arrow_x, arrow_y, pointer_x, pointer_y FROM cursor_presets ORDER BY rowid').all()
@@ -340,11 +470,11 @@ export class LibraryStore implements ListeningDataReader {
     this.db.prepare('UPDATE appearance_settings SET wave_pulse = ? WHERE id = 1').run(intensity)
   }
 
-  getTheme(): Theme {
-    return this.db.prepare('SELECT theme FROM appearance_settings WHERE id = 1').get()!.theme as Theme
+  getTheme(): ThemePreference {
+    return this.db.prepare('SELECT theme FROM appearance_settings WHERE id = 1').get()!.theme as ThemePreference
   }
 
-  setTheme(theme: Theme): void {
+  setTheme(theme: ThemePreference): void {
     this.db.prepare('UPDATE appearance_settings SET theme = ? WHERE id = 1').run(theme)
   }
 
@@ -395,6 +525,35 @@ export class LibraryStore implements ListeningDataReader {
     if (accelerator === null) this.db.prepare('DELETE FROM global_shortcuts WHERE action = ?').run(action)
     else this.db.prepare(`INSERT INTO global_shortcuts VALUES (?, ?)
       ON CONFLICT (action) DO UPDATE SET accelerator = excluded.accelerator`).run(action, accelerator)
+  }
+
+  getYandexSettings(): { token: Uint8Array | null; tokenEncrypted: boolean; quality: YandexQuality; lyrics: YandexLyricsFormat; embedCover: boolean; folder: string | null } {
+    const row = this.db.prepare('SELECT token, token_encrypted, quality, lyrics, embed_cover, folder FROM yandex_settings WHERE id = 1')
+      .get() as { token: Uint8Array | null; token_encrypted: number; quality: YandexQuality; lyrics: YandexLyricsFormat; embed_cover: number; folder: string | null }
+    return {
+      token: row.token, tokenEncrypted: row.token_encrypted === 1, quality: row.quality,
+      lyrics: row.lyrics, embedCover: row.embed_cover === 1, folder: row.folder,
+    }
+  }
+
+  setYandexToken(token: Uint8Array | null, encrypted: boolean): void {
+    this.db.prepare('UPDATE yandex_settings SET token = ?, token_encrypted = ? WHERE id = 1').run(token, Number(encrypted))
+  }
+
+  setYandexQuality(quality: YandexQuality): void {
+    this.db.prepare('UPDATE yandex_settings SET quality = ? WHERE id = 1').run(quality)
+  }
+
+  setYandexLyrics(lyrics: YandexLyricsFormat): void {
+    this.db.prepare('UPDATE yandex_settings SET lyrics = ? WHERE id = 1').run(lyrics)
+  }
+
+  setYandexEmbedCover(enabled: boolean): void {
+    this.db.prepare('UPDATE yandex_settings SET embed_cover = ? WHERE id = 1').run(Number(enabled))
+  }
+
+  setYandexFolder(folder: string | null): void {
+    this.db.prepare('UPDATE yandex_settings SET folder = ? WHERE id = 1').run(folder)
   }
 
   getWaveMode(): WaveMode {
@@ -533,9 +692,127 @@ export class LibraryStore implements ListeningDataReader {
     this.db.prepare('UPDATE sources SET available = ? WHERE id = ?').run(Number(available), id)
   }
 
-  saveScan(folder: string, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {
+  getCachedFileByIsrc(isrc: string): string | null {
+    const row = this.db.prepare('SELECT file_path FROM isrc_cache WHERE isrc = ?').get(isrc) as { file_path: string } | undefined
+    return row?.file_path ?? null
+  }
+
+  recordIsrcFile(isrc: string, trackId: string | null, filePath: string, source: string): void {
     this.transaction(() => {
-      this.db.prepare('INSERT INTO imported_folders (path) VALUES (?) ON CONFLICT DO NOTHING').run(folder)
+      this.db.prepare(`INSERT INTO isrc_cache (isrc, track_id, file_path, source, verified_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (isrc) DO UPDATE SET track_id = excluded.track_id, file_path = excluded.file_path,
+          source = excluded.source, verified_at = excluded.verified_at`).run(isrc, trackId ?? null, filePath, source, new Date().toISOString())
+    })
+  }
+
+  getCachedFingerprint(fingerprint: string): string | null {
+    const row = this.db.prepare('SELECT isrc FROM fingerprint_cache WHERE fingerprint = ?').get(fingerprint) as { isrc: string } | undefined
+    return row?.isrc ?? null
+  }
+
+  recordFingerprint(fingerprint: string, isrc: string): void {
+    this.transaction(() => {
+      this.db.prepare(`INSERT INTO fingerprint_cache (fingerprint, isrc, verified_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (fingerprint) DO UPDATE SET isrc = excluded.isrc, verified_at = excluded.verified_at`).run(fingerprint, isrc, new Date().toISOString())
+    })
+  }
+
+  deletePipelineJobs(ids: string[]): void {
+    this.transaction(() => {
+      const remove = this.db.prepare('DELETE FROM pipeline_jobs WHERE id = ?')
+      for (const id of ids) remove.run(id)
+    })
+  }
+
+  savePipelineJob(job: PipelineJob): void {
+    this.db.prepare(`INSERT INTO pipeline_jobs (id, payload, created_at) VALUES (?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`)
+      .run(job.id, JSON.stringify(job), job.createdAt)
+  }
+
+  loadPipelineJobs(): PipelineJob[] {
+    const rows = this.db.prepare('SELECT payload FROM pipeline_jobs ORDER BY created_at DESC')
+      .all() as { payload: string }[]
+    const jobs: PipelineJob[] = []
+    for (const row of rows) {
+      try {
+        const job = JSON.parse(row.payload) as PipelineJob
+        // Ignore rows from a future version instead of breaking the whole import screen.
+        if (typeof job?.id !== 'string' || !Array.isArray(job.items) || typeof job.playlistName !== 'string') continue
+        // Jobs saved by 0.9 predate the playlist link, genres and retry fields.
+        job.playlistId ??= null
+        job.sourceNote ??= null
+        job.finishedAt ??= null
+        job.message ??= null
+        for (const item of job.items) {
+          item.genres = Array.isArray(item.genres) ? item.genres.filter(genre => typeof genre === 'string') : []
+          item.candidateId ??= null
+          item.cached ??= false
+        }
+        jobs.push(job)
+      } catch {
+        // A damaged history row must not hide the rest of the history.
+      }
+    }
+    return jobs
+  }
+
+  /** Local track that was scanned from this exact file path. */
+  findTrackIdByPath(path: string): string | null {
+    const row = this.db.prepare(`SELECT track_id FROM sources
+      WHERE provider = 'local' AND provider_id = ? AND excluded = 0 ORDER BY rowid DESC LIMIT 1`)
+      .get(path) as { track_id: string } | undefined
+    return row?.track_id ?? null
+  }
+
+  /**
+   * Imported audio often has no tags at all (webm/opus from yt-dlp), so the
+   * catalogue metadata from the playlist is written to the library directly.
+   */
+  updateTrackMetadata(
+    id: string,
+    metadata: { title: string; artist: string | null; album: string | null; durationSeconds: number | null; genres: string[] },
+  ): void {
+    this.db.prepare(`UPDATE tracks SET title = ?, artist = COALESCE(?, artist), album = COALESCE(?, album),
+      duration_seconds = COALESCE(?, duration_seconds),
+      genres = CASE WHEN ? = '[]' THEN genres ELSE ? END WHERE id = ?`)
+      .run(metadata.title, metadata.artist, metadata.album, metadata.durationSeconds,
+        JSON.stringify(metadata.genres), JSON.stringify(metadata.genres), id)
+  }
+
+  linkIsrcTrack(isrc: string, trackId: string): void {
+    this.db.prepare('UPDATE isrc_cache SET track_id = ? WHERE isrc = ?').run(trackId, isrc)
+  }
+
+  /** Creates or refreshes the playlist that mirrors an imported source playlist. */
+  upsertPipelinePlaylist(name: string, trackIds: readonly string[], existingId: string | null): string {
+    return this.transaction(() => {
+      let id = existingId
+      if (id && !this.db.prepare('SELECT 1 FROM playlists WHERE id = ?').get(id)) id = null
+      if (id) {
+        this.db.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, id)
+      } else {
+        id = randomUUID()
+        this.db.prepare('INSERT INTO playlists (id, name) VALUES (?, ?)').run(id, name)
+      }
+      this.db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(id)
+      const insert = this.db.prepare('INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)')
+      const seen = new Set<string>()
+      let position = 0
+      for (const trackId of trackIds) {
+        if (seen.has(trackId)) continue
+        seen.add(trackId)
+        insert.run(id, trackId, position++)
+      }
+      return id
+    })
+  }
+
+  saveScan(folder: string | null, entries: ScanEntry[], availability: ReadonlyMap<string, boolean>): void {
+    this.transaction(() => {
+      if (folder !== null) this.db.prepare('INSERT INTO imported_folders (path) VALUES (?) ON CONFLICT DO NOTHING').run(folder)
       const writeTrack = this.db.prepare(`INSERT INTO tracks (id, title, artist, album, duration_seconds, genres, format)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET title = excluded.title, artist = excluded.artist,

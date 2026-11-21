@@ -13,7 +13,7 @@ const repeatLabels: Record<RepeatMode, string> = {
 }
 
 export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, queueOpen, toggleQueue, queueButton,
-  textMusicOpen, textMusicButton, toggleTextMusic, openFullPlayer, fullPlayerButton, openMini }: {
+  lyricsOpen, lyricsButton, toggleLyrics, openFullPlayer, fullPlayerButton, openMini }: {
   playback: ReturnType<typeof usePlayback>
   hasTracks: boolean
   liked: boolean
@@ -22,9 +22,9 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
   queueOpen: boolean
   toggleQueue: () => void
   queueButton: RefObject<HTMLButtonElement | null>
-  textMusicOpen: boolean
-  textMusicButton: RefObject<HTMLButtonElement | null>
-  toggleTextMusic: () => void
+  lyricsOpen: boolean
+  lyricsButton: RefObject<HTMLButtonElement | null>
+  toggleLyrics: () => void
   openMini: () => void
   openFullPlayer: () => void
   fullPlayerButton: RefObject<HTMLButtonElement | null>
@@ -59,8 +59,8 @@ export function Player({ playback, hasTracks, liked, likeDisabled, toggleLike, q
       <SleepMenu playback={playback} />
       <SoundMenu sound={playback.sound} saving={playback.savingSoundEffect} error={playback.soundEffectError}
         changeEffect={playback.changeSoundEffect} changeReverb={playback.changeReverb} />
-      <IconButton ref={textMusicButton} icon="lyrics" label="Текстомузыка" aria-pressed={textMusicOpen}
-        aria-controls="song-lyrics" disabled={!track && !textMusicOpen} onClick={toggleTextMusic} />
+      <IconButton ref={lyricsButton} icon="lyrics" label="Текст песни" aria-expanded={lyricsOpen}
+        aria-controls="song-lyrics" disabled={!track && !lyricsOpen} onClick={toggleLyrics} />
       <VolumeControl volume={volume} toggleMute={playback.toggleMute} setVolumeLevel={playback.setVolumeLevel} />
       <button type="button" className="queue-toggle secondary" ref={queueButton} aria-expanded={queueOpen}
         aria-controls="playback-queue" aria-label={'Очередь (' + queue.pending.length + ')'}

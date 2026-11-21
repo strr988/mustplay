@@ -1,5 +1,21 @@
 import { useRef } from 'react'
 import type { ComponentProps, ReactNode } from 'react'
+import type { PipelineProvider } from '../../shared/pipeline'
+import apple from '../assets/providers/applemusic.svg'
+import deezer from '../assets/providers/deezer.svg'
+import soundcloud from '../assets/providers/soundcloud.svg'
+import spotify from '../assets/providers/spotify.svg'
+import vk from '../assets/providers/vk.svg'
+import yandex from '../assets/providers/yandex.svg'
+import ytmusic from '../assets/providers/youtubemusic.svg'
+
+const providerIcons = { apple, deezer, soundcloud, spotify, vk, yandex, ytmusic } satisfies Record<PipelineProvider, string>
+
+export function ProviderIcon({ provider }: { provider?: PipelineProvider }) {
+  return provider
+    ? <img className="provider-icon" data-provider={provider} alt="" draggable={false} src={providerIcons[provider]} />
+    : <Icon name="link" />
+}
 
 const drawings = {
   timer: <path d="M9 3h6m-3 7v4l2 1m4-8 2-2M20 14a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" />,
@@ -16,6 +32,8 @@ const drawings = {
   moon: <path d="M20.9 13.2A9 9 0 0 1 10.8 3.1 9 9 0 1 0 20.9 13.2Z" />,
   pin: <path d="M9 4h6l-1 6 4 4H6l4-4zm3 10v7" />,
   expand: <path d="M14 4h6v6m0-6-7 7M10 20H4v-6m0 6 7-7" />,
+  import: <path d="M4 5h13M4 10h13M4 15h6m7-2v8m-4-4h8" />,
+  link: <path d="m10 13 4-4m-6 7-1 1a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0m2 8a3.5 3.5 0 0 0 5 0l4-4a3.5 3.5 0 0 0-5-5l-1 1" transform="translate(1 1) scale(.92)" />,
   collapse: <path d="m6 9 6 6 6-6" />,
   more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   mini: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h6v4h-6z" /></>,
@@ -23,6 +41,8 @@ const drawings = {
   folders: <path d="M3 19h14V8h-7L8 6H3zM7 3h8l2 2h4v11" />,
   refresh: <path d="M20 4v5h-5M4 20v-5h5m11-6a8 8 0 0 0-13-3m-3 9a8 8 0 0 0 13 3" />,
   search: <><circle cx="10.5" cy="10.5" r="6" /><path d="m15 15 5 5" /></>,
+  download: <path d="M12 3v12m-5-5 5 5 5-5M4 21h16" />,
+  check: <path d="m5 12 5 5 9-10" />,
   up: <path d="M12 20V4m-6 6 6-6 6 6" />,
   down: <path d="M12 4v16m-6-6 6 6 6-6" />,
   left: <path d="m14 6-6 6 6 6" />,

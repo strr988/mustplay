@@ -1,11 +1,8 @@
-import { audioMime } from './audio-formats'
-import { parseStream } from 'music-metadata'
+import { parseSourceTags } from './source-tags'
 import type { FileHandle } from 'node:fs/promises'
 import type { Library } from './library'
 import type { LocalSource } from './library-store'
-import { sameFile } from './local-file'
 
-const probeBytes = 8 * 1024 * 1024
 const maxImageBytes = 2 * 1024 * 1024
 const maxCacheBytes = 16 * 1024 * 1024
 const maxCacheEntries = 256
@@ -54,7 +51,7 @@ function isSizedJpeg(bytes: Buffer): boolean {
   return false
 }
 
-function artworkMime(data: Uint8Array): Image['mime'] | null {
+export function artworkMime(data: Uint8Array): Image['mime'] | null {
   if (data.length > maxImageBytes) return null
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength)
   if (bytes.subarray(0, 8).equals(pngSignature) && isStaticPng(bytes)) return 'image/png'
@@ -107,28 +104,19 @@ export class Artwork {
   }
 
   private async extract(file: FileHandle, source: LocalSource): Promise<Image | null> {
-    const size = Math.min(probeBytes, Number(source.identity.size))
-    if (size <= 0) return null
-    const stream = file.createReadStream({ start: 0, end: size - 1, autoClose: false })
     try {
-      const mimeType = audioMime[source.format]
-      const { common } = await parseStream(stream, { mimeType, size }, {
-        maxMemoryAllocation: probeBytes,
-        maxMetadataEntries: 1_000,
-      })
-      const pictures = common.picture ?? []
+      const tags = await parseSourceTags(file, source, { maxMetadataEntries: 1_000 })
+      const pictures = tags?.common.picture ?? []
       const front = pictures.find(picture => ['front', 'cover', 'cover (front)'].includes(picture.type?.toLowerCase() ?? ''))
       for (const picture of front ? [front, ...pictures.filter(candidate => candidate !== front)] : pictures) {
         const mime = artworkMime(picture.data)
         // Copy the selected image so a slice cannot keep the entire metadata buffer alive.
-        if (mime && sameFile(source.identity, await file.stat({ bigint: true }))) {
+        if (mime) {
           return { mime, bytes: new Uint8Array(picture.data) }
         }
       }
     } catch {
       // A malformed or oversized tag affects only artwork.
-    } finally {
-      stream.destroy()
     }
     return null
   }

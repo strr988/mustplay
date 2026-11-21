@@ -1,6 +1,6 @@
 {
   "name": "mustplay",
-  "version": "0.8.0",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "pnpm typecheck && electron-vite build",
-    "start": "electron-vite preview --skipBuild",
+    "start": "pnpm build && electron-vite preview --skipBuild",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:desktop": "pnpm build && node --test tests/desktop.mjs",

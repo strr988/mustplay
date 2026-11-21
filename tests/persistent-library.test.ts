@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { Library } from '../src/main/library'
+import type { PipelineJob } from '../src/shared/pipeline'
 
 const mp3 = new URL('./fixtures/01-tone.mp3', import.meta.url)
 const flac = new URL('./fixtures/02-tone.flac', import.meta.url)
@@ -51,7 +52,7 @@ it('persists tracks, source IDs and canonical folders across reopening and overl
   expect(db.prepare('SELECT COUNT(*) AS count FROM imported_folders').get()).toEqual({ count: 2 })
   expect(db.prepare('SELECT COUNT(*) AS count FROM sources WHERE available = 1').get()).toEqual({ count: 2 })
   expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 12 })
+  expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
 })
 
 it('retains the track when moving a file on the same volume and revokes the old media ID', async () => {
@@ -190,3 +191,78 @@ it('rolls back the whole scan on a database error and permits retry', async () =
   expect((await current.importFolder(folder)).tracks).toHaveLength(1)
 })
 
+
+it('turns a finished import into a playlist with source metadata and keeps its history', async () => {
+  const selected = join(folder, 'selected')
+  await mkdir(selected)
+  const file = join(selected, 'tone.mp3')
+  await copyFile(mp3, file)
+  await copyFile(flac, join(folder, 'unrelated.flac'))
+  const lib = openLibrary()
+  const [before] = (await lib.importFolder(selected)).tracks
+  const originalFolders = lib.getMusicFolders()
+  const job: PipelineJob = {
+    id: 'job-1',
+    provider: 'deezer',
+    playlistUrl: 'https://www.deezer.com/playlist/1',
+    playlistName: 'Jazz',
+    status: 'done',
+    total: 1,
+    createdAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    message: '���������',
+    sourceNote: null,
+    playlistId: null,
+    items: [{
+      id: 'item-1', position: 0, title: 'Midnight City', artist: 'M83',
+      album: 'Hurry Up, We are Dreaming', genres: ['Pop'], durationSeconds: 244,
+      isrc: 'FRU661100171', status: 'verified', method: 'isrc', confidence: 1,
+      filePath: file, message: '������ ��� �����', candidateId: 'abc', cached: false,
+      updatedAt: new Date().toISOString(),
+    }],
+  }
+  const playlistId = await lib.importPipelineJob(job, folder)
+  expect(playlistId).toBeTruthy()
+  const playlist = lib.getPlaylists().find(item => item.id === playlistId)
+  expect(playlist).toMatchObject({ name: 'Jazz' })
+  expect(playlist?.trackIds).toEqual([before.id])
+  expect(lib.getMusicFolders()).toEqual(originalFolders)
+  expect(lib.getTracks()).toHaveLength(1)
+  const track = lib.getTracks().find(item => item.id === playlist?.trackIds[0])
+  expect(track).toMatchObject({
+    title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We are Dreaming',
+    genres: ['Pop'], durationSeconds: 244,
+  })
+
+  job.playlistId = playlistId ?? null
+  lib.pipelineStore().savePipelineJob(job)
+  const reopened = openLibrary()
+  const history = reopened.pipelineStore().loadPipelineJobs()
+  expect(history).toHaveLength(1)
+  expect(history[0]).toMatchObject({ id: 'job-1', playlistName: 'Jazz', playlistId })
+  expect(reopened.getPlaylists().find(item => item.id === playlistId)?.trackIds).toEqual([track!.id])
+})
+
+it('fills defaults for jobs saved before genres and playlist links existed', () => {
+  openLibrary()
+  const legacy = {
+    id: 'old-job',
+    provider: 'deezer',
+    playlistUrl: 'https://www.deezer.com/playlist/1',
+    playlistName: 'Jazz',
+    status: 'done',
+    total: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    items: [{
+      id: 'old-item', position: 0, title: 'Song', artist: null, album: null,
+      durationSeconds: null, isrc: null, status: 'verified', method: 'acoustid',
+      confidence: 0.9, filePath: null, message: null, updatedAt: '2026-01-01T00:01:00.000Z',
+    }],
+  }
+  using db = new DatabaseSync(databasePath)
+  db.prepare('INSERT INTO pipeline_jobs (id, payload, created_at) VALUES (?, ?, ?)')
+    .run(legacy.id, JSON.stringify(legacy), legacy.createdAt)
+  const [job] = library!.pipelineStore().loadPipelineJobs()
+  expect(job).toMatchObject({ id: 'old-job', playlistId: null })
+  expect(job!.items[0]).toMatchObject({ genres: [], candidateId: null, cached: false })
+})

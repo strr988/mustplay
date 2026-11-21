@@ -1,99 +1,117 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
-import type { LibraryTrack, Lyrics, LyricLine, LyricsMode } from '../../shared/contracts'
+import type { LibraryTrack, Lyrics, LyricLine } from '../../shared/contracts'
 import { activeLyric } from './active-lyric'
 import { Artwork } from './artwork'
 import { EmptyState } from './empty-state'
+import { IconButton } from './icons'
 
-export function LyricsPanel({ track, active, audio, canSeek, seek, mode, changeMode, close, compact = false }: {
-  track: LibraryTrack | undefined
-  active: boolean
-  audio: RefObject<HTMLAudioElement | null>
-  canSeek: boolean
-  seek: (seconds: number) => void
-  mode: LyricsMode
-  changeMode?: (mode: LyricsMode) => void
-  close?: () => void
-  compact?: boolean
-}) {
+export type LyricsResult = { lyrics: Lyrics | null } | 'error' | undefined
+
+export function useTrackLyrics(track: LibraryTrack | undefined, enabled: boolean): LyricsResult {
   const trackId = track?.id
   const available = track?.available
-  const [result, setResult] = useState<{ lyrics: Lyrics | null } | 'error'>()
-  const closeOnEscape = useEffectEvent((event: KeyboardEvent) => {
-    if (event.key === 'Escape' && !event.defaultPrevented) close?.()
-  })
+  const artworkUrl = track?.artworkUrl
+  const [state, setState] = useState<{ trackId: string; artworkUrl: string | null | undefined; result: LyricsResult }>()
   useEffect(() => {
-    if (!active || mode !== 'sync' || !close) return
-    const keydown = (event: KeyboardEvent) => closeOnEscape(event)
-    window.addEventListener('keydown', keydown)
-    return () => window.removeEventListener('keydown', keydown)
-  }, [active, mode, !!close])
-  useEffect(() => {
-    if (!trackId || !available) return
+    if (!enabled || !trackId || !available) return
     let current = true
-    void window.mustplay.getLyrics(trackId).then(lyrics => {
-      if (current) setResult({ lyrics })
-    }).catch(() => {
-      if (current) setResult('error')
-    })
+    function finish(result: LyricsResult) {
+      if (current && trackId) setState({ trackId, artworkUrl, result })
+    }
+    void window.mustplay.getLyrics(trackId).then(lyrics => finish({ lyrics })).catch(() => finish('error'))
     return () => { current = false }
-  }, [trackId, available])
+  }, [enabled, trackId, available, artworkUrl])
+  return available && state?.trackId === trackId && state?.artworkUrl === artworkUrl ? state?.result : undefined
+}
 
+export function LyricsDrawer({ track, result, close, closeButton, openTextMusic }: {
+  track: LibraryTrack | undefined
+  result: LyricsResult
+  close(): void
+  closeButton: RefObject<HTMLButtonElement | null>
+  openTextMusic(): void
+}) {
+  return <aside id="song-lyrics" className="lyrics-drawer" aria-labelledby="song-lyrics-heading">
+    <header className="queue-heading">
+      <h2 id="song-lyrics-heading">Текст песни</h2>
+      <IconButton ref={closeButton} icon="close" label="Закрыть текст песни" onClick={close} />
+    </header>
+    <div className="queue-body lyrics-drawer-body" key={track?.id} tabIndex={0}>
+      {track && <div className="lyrics-track">
+        <Artwork key={track.artworkUrl} url={track.artworkUrl} eager />
+        <div className="min-w-0">
+          <p className="track-name truncate" title={track.title}>{track.title}</p>
+          {track.artist && <p className="muted truncate" title={track.artist}>{track.artist}</p>}
+        </div>
+      </div>}
+      <LyricsPanel track={track} result={result} mode="read" />
+    </div>
+    {track && <div className="lyrics-drawer-actions">
+      <button type="button" className="secondary" onClick={openTextMusic}>Открыть текстомузыку</button>
+    </div>}
+  </aside>
+}
+
+type LyricsPresentation = { mode: 'read' } | {
+  mode: 'sync'
+  audio: RefObject<HTMLAudioElement | null>
+  active: boolean
+  canSeek: boolean
+  seek: (seconds: number) => void
+}
+
+export function LyricsPanel({ track, result, ...presentation }: {
+  track: LibraryTrack | undefined
+  result: LyricsResult
+} & LyricsPresentation) {
+  const mode = presentation.mode
   const lyrics = result && result !== 'error' ? result.lyrics : null
-  const synchronized = lyrics?.kind === 'timed' && mode === 'sync'
   let body
   if (!track) {
     body = <EmptyState icon="lyrics" title="Трек не выбран">Запустите трек из библиотеки, плейлиста или «Моей волны».</EmptyState>
-  } else if (!available || (result && result !== 'error' && !result.lyrics)) {
+  } else if (!track.available || (result && result !== 'error' && !result.lyrics)) {
     body = <EmptyState icon="lyrics" title="Текст не найден">Добавьте LRC или TXT с именем трека рядом с аудиофайлом.</EmptyState>
   } else if (result === 'error') {
     body = <p role="alert">Не удалось прочитать текст песни.</p>
   } else if (!result) {
     body = <p className="muted" role="status">Читаем текст…</p>
-  } else if (synchronized) {
-    body = <TimedLyrics lines={lyrics.lines} active={active} audio={audio} canSeek={canSeek} seek={seek}
-      showFollowButton={!compact} />
+  } else if (lyrics?.kind === 'timed' && presentation.mode === 'sync') {
+    body = <TimedLyrics lines={lyrics.lines} active={presentation.active} audio={presentation.audio}
+      canSeek={presentation.canSeek} seek={presentation.seek} />
   } else if (lyrics) {
     const text = lyrics.kind === 'plain' ? lyrics.text : lyrics.lines.map(line => line.text).join('\n').trim()
     body = <>
       {mode === 'sync' && <p className="lyrics-note muted">У этого текста нет временных меток.</p>}
-      <div className="lyrics-plain" tabIndex={0}>{text}</div>
+      <div className="lyrics-plain" tabIndex={mode === 'sync' ? 0 : undefined}>{text}</div>
     </>
   }
-  const heading = mode === 'sync' ? 'Текстомузыка' : 'Текст песни'
-  return <section id={compact ? 'full-player-lyrics' : 'song-lyrics'} aria-label={heading}
-    className={mode === 'sync' || compact ? 'text-music' : undefined}>
-    {(!compact || mode === 'read') && <header className="section-heading lyrics-heading">
-      <div className="min-w-0">
-        {compact ? <h2>{heading}</h2> : <h1>{heading}</h1>}
-        {track && !compact && <div className="lyrics-track">
-          <Artwork key={track.artworkUrl} url={track.artworkUrl} eager />
-          <div className="min-w-0">
-            <p className="track-name truncate" title={track.title}>{track.title}</p>
-            {track.artist && <p className="muted truncate" title={track.artist}>{track.artist}</p>}
-          </div>
-        </div>}
-      </div>
-      {changeMode && lyrics?.kind === 'timed' && <button type="button" className="secondary" onClick={() => changeMode(mode === 'sync' ? 'read' : 'sync')}>
-        {mode === 'sync' ? 'Читать текст' : 'Текстомузыка'}
-      </button>}
-    </header>}
+  if (mode === 'read') return body
+  return <section id="full-player-lyrics" aria-label="Текст песни" className="text-music">
     {body}
   </section>
 }
 
-function TimedLyrics({ lines, active, audio, canSeek, seek, showFollowButton }: {
+function TimedLyrics({ lines, active, audio, canSeek, seek }: {
   lines: LyricLine[]
   active: boolean
   audio: RefObject<HTMLAudioElement | null>
   canSeek: boolean
   seek: (seconds: number) => void
-  showFollowButton: boolean
 }) {
   const [current, setCurrent] = useState(-1)
   const [follow, setFollow] = useState(true)
   const currentLine = useRef<HTMLLIElement>(null)
   const list = useRef<HTMLOListElement>(null)
+  const resumeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => () => clearTimeout(resumeTimer.current), [])
+
+  function pauseFollowing() {
+    clearTimeout(resumeTimer.current)
+    setFollow(false)
+    resumeTimer.current = setTimeout(() => setFollow(true), 5000)
+  }
   useEffect(() => {
     const element = audio.current
     if (!active || !element) return
@@ -116,22 +134,15 @@ function TimedLyrics({ lines, active, audio, canSeek, seek, showFollowButton }: 
     })
   }, [current, follow, active])
 
-  return <>
-    {showFollowButton && <div className="lyrics-toolbar">
-      <button type="button" className={follow ? "primary" : "secondary"} aria-pressed={follow} onClick={() => setFollow(!follow)}>
-        Следить за текстом
-      </button>
-    </div>}
-    <ol ref={list} className="lyrics-lines" aria-label="Строки текста" onWheel={() => setFollow(false)}
-      onTouchMove={() => setFollow(false)} onKeyDown={event => {
-        if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) setFollow(false)
-      }} onPointerDown={event => {
-        if (event.target === event.currentTarget) setFollow(false)
-      }} tabIndex={0}>
+  return (
+    <ol ref={list} className="lyrics-lines" aria-label="Строки текста" onWheel={pauseFollowing}
+      onTouchMove={pauseFollowing} onKeyDown={event => {
+        if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) pauseFollowing()
+      }} onPointerDown={pauseFollowing} tabIndex={0}>
       {lines.map(({ seconds, text }, index) => <li key={index} ref={index === current ? currentLine : undefined}>
         {text && <button type="button" disabled={!canSeek} aria-current={index === current ? 'true' : undefined}
-          data-past={index < current} onClick={() => { seek(seconds); setFollow(true) }}>{text}</button>}
+          data-past={index < current} onClick={() => { seek(seconds); pauseFollowing() }}>{text}</button>}
       </li>)}
     </ol>
-  </>
+  )
 }

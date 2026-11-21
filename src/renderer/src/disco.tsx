@@ -58,7 +58,6 @@ export function useDiscoMode(effects: { readonly current: AudioEffects | null },
   useEffect(() => {
     const analyser = effects.current?.analyser
     if (!enabled || !active || !analyser) return
-    const motion = matchMedia('(prefers-reduced-motion: reduce)')
     const spectrum = new Float32Array(analyser.frequencyBinCount)
     const binHz = analyser.context.sampleRate / analyser.fftSize
     let bassAverage = 0
@@ -69,9 +68,7 @@ export function useDiscoMode(effects: { readonly current: AudioEffects | null },
       bassAverage = accent = envelope = 0
       showLevel(0)
     }
-    motion.addEventListener('change', reset)
     const timer = window.setInterval(() => {
-      if (motion.matches) return
       const now = performance.now()
       analyser.getFloatFrequencyData(spectrum)
       const bass = bandLevel(spectrum, binHz, 35, 190)
@@ -87,7 +84,6 @@ export function useDiscoMode(effects: { readonly current: AudioEffects | null },
     }, 30)
     return () => {
       clearInterval(timer)
-      motion.removeEventListener('change', reset)
       reset()
     }
   }, [effects, enabled, active])

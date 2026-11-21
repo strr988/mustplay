@@ -36,8 +36,7 @@ export function createAudioEffects(element: HTMLAudioElement): AudioEffects {
   analyser.maxDecibels = -24
   wet.gain.value = 0
   const source = context.createMediaElementSource(element)
-  source.connect(dry).connect(output).connect(context.destination)
-  source.connect(analyser)
+  source.connect(analyser).connect(dry).connect(output).connect(context.destination)
   wet.connect(output)
 
   let impulse: AudioBuffer | undefined

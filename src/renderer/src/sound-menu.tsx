@@ -8,33 +8,41 @@ const labels: Record<SoundEffect, string> = {
 }
 const formatRate = new Intl.NumberFormat('ru')
 
-export function SoundMenu({ sound, saving = false, error, changeEffect, changeReverb, className }: {
+type SoundControls = {
   sound: SoundSettings | null
   saving?: boolean
-  className?: string
   error?: string
   changeEffect(effect: SoundEffect): void
   changeReverb(effect: SoundEffect, enabled: boolean): void
-}) {
+}
+
+export function SoundMenu({ className, ...controls }: SoundControls & { className?: string }) {
   const id = useId()
-  const effect = sound?.effect ?? 'original'
+  const effect = controls.sound?.effect ?? 'original'
   return <>
     <IconButton icon="effects" label="Звуковые эффекты" popoverTarget={id} aria-controls={id}
-      className={className ? `sound-button ${className}` : "sound-button"} data-active={effect !== 'original' || sound?.reverb[effect] || undefined} />
+      className={className ? `sound-button ${className}` : "sound-button"} data-active={effect !== 'original' || controls.sound?.reverb[effect] || undefined} />
     <div className="sound-menu" id={id} popover="auto">
-      <label className="sound-control">
-        <span>Пресет</span>
-        <select className="player-select" aria-label="Звуковой эффект" value={effect} disabled={!sound || saving}
-          onChange={event => changeEffect(event.currentTarget.value as SoundEffect)}>
-          {soundEffects.map(value => <option key={value} value={value}>{labels[value]} · {formatRate.format(soundEffectRates[value])}×</option>)}
-        </select>
-      </label>
-      <label className="sound-control reverb-control">
-        <span>Reverb</span>
-        <input type="checkbox" role="switch" checked={sound?.reverb[effect] ?? false} disabled={!sound || saving}
-          onChange={event => changeReverb(effect, event.currentTarget.checked)} />
-      </label>
-      {error && <p role="alert">{error}</p>}
+      <SoundSettingsFields {...controls} />
     </div>
+  </>
+}
+
+export function SoundSettingsFields({ sound, saving = false, error, changeEffect, changeReverb }: SoundControls) {
+  const effect = sound?.effect ?? 'original'
+  return <>
+    <label className="sound-control">
+      <span>Пресет</span>
+      <select className="player-select" aria-label="Звуковой эффект" value={effect} disabled={!sound || saving}
+        onChange={event => changeEffect(event.currentTarget.value as SoundEffect)}>
+        {soundEffects.map(value => <option key={value} value={value}>{labels[value]} · {formatRate.format(soundEffectRates[value])}×</option>)}
+      </select>
+    </label>
+    <label className="sound-control reverb-control">
+      <span>Reverb</span>
+      <input type="checkbox" role="switch" checked={sound?.reverb[effect] ?? false} disabled={!sound || saving}
+        onChange={event => changeReverb(effect, event.currentTarget.checked)} />
+    </label>
+    {error && <p role="alert">{error}</p>}
   </>
 }

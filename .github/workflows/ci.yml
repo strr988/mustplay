@@ -12,7 +12,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -28,4 +28,10 @@ jobs:
       - name: Type-check and build
         run: pnpm build
       - name: Unit tests
-        run: pnpm test
+        run: pnpm test --maxWorkers=2 --testTimeout=15000
+      - name: Source settings in Electron
+        run: node --test --test-name-pattern "import, search, theme" tests/desktop.mjs
+      - name: Build Windows x64 ZIP
+        run: pnpm package:windows
+      - name: Verify Windows ZIP and migrated profiles
+        run: pnpm test:release

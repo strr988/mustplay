@@ -1,38 +1,43 @@
-import { useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
-import type { Theme } from '../../shared/contracts'
-import { Icon } from './icons'
+import { useEffect, useState } from 'react'
+import type { ThemePreference } from '../../shared/contracts'
 
-export function ThemeToggle({ initialTheme, reportError }: { initialTheme: Theme; reportError: (message: string) => void }) {
-  const [theme, setTheme] = useState(initialTheme)
-  const switching = useRef(false)
-  const next = theme === 'dark' ? 'light' : 'dark'
-  const label = next === 'light' ? 'Включить светлую тему' : 'Включить тёмную тему'
+export function ThemeSetting() {
+  const [theme, setTheme] = useState<ThemePreference>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
 
-  async function toggle() {
-    if (switching.current) return
-    switching.current = true
-    reportError('')
-    const apply = async () => {
-      await window.mustplay.setTheme(next)
-      document.documentElement.dataset.theme = next
-      flushSync(() => setTheme(next))
-    }
+  useEffect(() => {
+    let active = true
+    void window.mustplay.getThemePreference().then(value => {
+      if (active) setTheme(value)
+    }).catch(() => { if (active) setError('Не удалось загрузить тему.') })
+    return () => { active = false }
+  }, [])
+
+  async function changeTheme(value: ThemePreference) {
+    setBusy(true)
+    setError('')
     try {
-      if (matchMedia('(prefers-reduced-motion: reduce)').matches || !document.startViewTransition) {
-        await apply()
-      } else {
-        await document.startViewTransition(apply).finished
-      }
+      await window.mustplay.setTheme(value)
+      setTheme(value)
     } catch {
-      reportError('Не удалось сохранить тему.')
+      setError('Не удалось сохранить тему.')
     } finally {
-      switching.current = false
+      setBusy(false)
     }
   }
 
-  return <button type="button" className="theme-toggle" aria-label={label} title={label} onClick={() => void toggle()}>
-    <Icon name={next === 'light' ? 'sun' : 'moon'} />
-    <span>{next === 'light' ? 'Светлая тема' : 'Тёмная тема'}</span>
-  </button>
+  return <>
+    <label className="settings-option">
+      <span>Тема оформления</span>
+      <select className="settings-input player-select" aria-label="Тема оформления" value={theme ?? ''} disabled={theme === undefined || busy}
+        onChange={event => void changeTheme(event.currentTarget.value as ThemePreference)}>
+        {theme === undefined && <option value="">—</option>}
+        <option value="system">Системная</option>
+        <option value="dark">Тёмная</option>
+        <option value="light">Светлая</option>
+      </select>
+    </label>
+    {error && <p role="alert">{error}</p>}
+  </>
 }
