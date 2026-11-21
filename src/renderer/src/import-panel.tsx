@@ -117,6 +117,8 @@ export function ImportPanel({ active, openSettings, onOpenPlaylist, onLibraryCha
   const [noticeKind, setNoticeKind] = useState<'ok' | 'error' | null>(null)
   const [busy, setBusy] = useState(false)
   const [retrying, setRetrying] = useState('')
+  const [clearingHistory, setClearingHistory] = useState(false)
+  const historyRevision = useRef(0)
   const [webSource, setWebSource] = useState<WebSourceState | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const stage = useRef<HTMLDivElement>(null)
@@ -127,11 +129,12 @@ export function ImportPanel({ active, openSettings, onOpenPlaylist, onLibraryCha
 
   useEffect(() => {
     mounted.current = true
+    const revision = historyRevision.current
     void window.mustplay.listPipelineJobs().then(list => {
-      if (!mounted.current) return
+      if (!mounted.current || revision !== historyRevision.current) return
       setJobs(list)
       if (list[0]) void window.mustplay.getPipelineJob(list[0].id).then(job => {
-        if (mounted.current && job) setActiveJob(previous => previous ?? job)
+        if (mounted.current && job && revision === historyRevision.current) setActiveJob(previous => previous ?? job)
       }).catch(() => {})
     }).catch(() => {})
     void window.mustplay.getWebSourceState().then(state => {
@@ -329,8 +332,25 @@ export function ImportPanel({ active, openSettings, onOpenPlaylist, onLibraryCha
   }
 
   async function openJob(id: string) {
+    const revision = historyRevision.current
     const job = await window.mustplay.getPipelineJob(id)
-    if (mounted.current && job) setActiveJob(job)
+    if (mounted.current && job && revision === historyRevision.current) setActiveJob(job)
+  }
+
+  async function clearHistory() {
+    setClearingHistory(true)
+    try {
+      await window.mustplay.clearPipelineHistory()
+      historyRevision.current++
+      const remaining = await window.mustplay.listPipelineJobs()
+      setJobs(remaining)
+      setActiveJob(previous => previous && remaining.some(job => job.id === previous.id) ? previous : null)
+    } catch {
+      setNotice('Не удалось очистить историю импорта.')
+      setNoticeKind('error')
+    } finally {
+      setClearingHistory(false)
+    }
   }
 
   async function retryItem(item: PipelineItemView) {
@@ -599,7 +619,12 @@ export function ImportPanel({ active, openSettings, onOpenPlaylist, onLibraryCha
     </section>}
 
     <section className="settings-card">
-      <h2>История</h2>
+      <div className="settings-option">
+        <h2>История</h2>
+        <button type="button" className="secondary"
+          disabled={clearingHistory || busy || !!retrying || jobs.every(job => job.status === 'running')}
+          onClick={() => void clearHistory()}>Очистить историю импорта</button>
+      </div>
       {jobs.length === 0
         ? <p className="muted">Импортируйте первый плейлист — он появится здесь.</p>
         : <div className="import-job-list">

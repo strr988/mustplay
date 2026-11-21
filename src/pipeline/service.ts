@@ -267,6 +267,7 @@ export class PipelineService {
   }
 
   private persist(job: PipelineJob): void {
+    if (!this.jobs.has(job.id)) return
     try {
       this.store.savePipelineJob(job)
     } catch {
@@ -471,6 +472,12 @@ export class PipelineService {
     return this.jobs.get(id) ?? null
   }
 
+  clearHistory(): void {
+    const ids = [...this.jobs.values()].filter(job => job.status !== 'running').map(job => job.id)
+    this.store.deletePipelineJobs(ids)
+    for (const id of ids) this.jobs.delete(id)
+  }
+
   listPipelineJobs(): PipelineJobSummary[] {
     return Array.from(this.jobs.values())
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -510,6 +517,8 @@ export class PipelineService {
     const item = job.items.find(entry => entry.id === itemId)
     if (!item) throw new Error('Трек не найден в задании')
     const ready = await this.readySettings(settings)
+    if (this.jobs.get(jobId) !== job) throw new Error('Задание не найдено')
+    if (this.currentJob()?.status === 'running') throw new Error('Импорт уже запущен')
     if (workers < pipelineWorkerLimits.min) throw new Error('Некорректное число загрузок')
 
     const track: PipelineTrackInput = {

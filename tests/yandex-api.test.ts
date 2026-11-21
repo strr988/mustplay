@@ -1,6 +1,11 @@
 import { createCipheriv } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
-import { coverUrl, decryptEncraw, fileInfoSign, fullTitle, lyricsSign, normalizeTrack, parseEncrawKey, trackEntry } from '../src/main/yandex-api'
+import { EventEmitter } from 'node:events'
+import { IncomingMessage } from 'node:http'
+import type { ClientRequest } from 'node:http'
+import { request } from 'node:https'
+import { Socket } from 'node:net'
+import { describe, expect, it, vi } from 'vitest'
+import { coverUrl, decryptEncraw, fileInfoSign, fullTitle, lyricsSign, normalizeTrack, parseEncrawKey, trackEntry, YandexApi } from '../src/main/yandex-api'
 
 describe('request signing', () => {
   it('matches the reference file-info signature', () => {
@@ -93,4 +98,22 @@ describe('cover url', () => {
     expect(coverUrl('avatars.yandex.net/get-music/%%/cover', '400x400')).toBe('https://avatars.yandex.net/get-music/400x400/cover')
     expect(coverUrl('x/%%', 'orig')).toBe('https://x/orig')
   })
+})
+vi.mock('node:https', () => ({ request: vi.fn() }))
+
+it('sends OAuth only to the exact Yandex API origin', async () => {
+  vi.mocked(request).mockImplementation((_url, _options, reply) => {
+    const outgoing = new EventEmitter()
+    return Object.assign(outgoing, {
+      setTimeout() {},
+      end() { reply?.(Object.assign(new IncomingMessage(new Socket()), { statusCode: 200 })) },
+    }) as unknown as ClientRequest
+  })
+  const api = new YandexApi('synthetic-token')
+  await api.openDownload('https://api.music.yandex.net/audio')
+  await api.openDownload('https://media.example/audio')
+  await api.openDownload('https://api.music.yandex.net.example/audio')
+  await api.openDownload('https://api.music.yandex.net:8443/audio')
+  expect(vi.mocked(request).mock.calls.map(call => (call[1] as { headers: Record<string, string> }).headers.Authorization))
+    .toEqual(['OAuth synthetic-token', undefined, undefined, undefined])
 })

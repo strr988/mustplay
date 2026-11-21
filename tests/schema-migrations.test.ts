@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -121,4 +121,64 @@ it('preserves the 0.11.0 theme on upgrade and remembers system mode', () => {
   } finally {
     reopened.close()
   }
+})
+
+const historical = (version: string) => new URL('./fixtures/historical-libraries/' + version + '.sqlite', import.meta.url)
+
+const profileTables = ['tracks', 'playlists', 'playlist_items', 'track_preferences', 'playback_events',
+  'appearance_settings', 'wave_settings', 'yandex_settings', 'isrc_cache', 'fingerprint_cache']
+
+function snapshot(db: DatabaseSync) {
+  return Object.fromEntries(profileTables.filter(name =>
+    db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(name))
+    .map(name => [name, db.prepare('SELECT * FROM ' + name).all()]))
+}
+
+it.each([['0.8.0', 12], ['0.9.0-yandex', 13], ['0.10.0', 14]] as const)(
+  'migrates a populated database created by release %s', async (version, schema) => {
+    const path = join(folder, 'profile.sqlite')
+    await copyFile(historical(version), path)
+    using original = new DatabaseSync(historical(version), { readOnly: true })
+    expect(original.prepare('PRAGMA user_version').get()).toEqual({ user_version: schema })
+    const before = snapshot(original)
+
+    new LibraryStore(path).close()
+    new LibraryStore(path).close()
+    using current = new DatabaseSync(path, { readOnly: true })
+    expect(current.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
+    expect(current.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    expect(snapshot(current)).toMatchObject(before)
+  },
+)
+
+it('recovers the pre-upgrade profile after a failed migration', async () => {
+  const path = join(folder, 'profile.sqlite')
+  await copyFile(historical('0.10.0'), path)
+  using original = new DatabaseSync(historical('0.10.0'), { readOnly: true })
+  const before = snapshot(original)
+  {
+    using profile = new DatabaseSync(path)
+    profile.exec('CREATE VIEW yandex_settings AS SELECT 1')
+  }
+
+  expect(() => new LibraryStore(path)).toThrow(/yandex_settings/i)
+  {
+    using failed = new DatabaseSync(path, { readOnly: true })
+    expect(failed.prepare('PRAGMA user_version').get()).toEqual({ user_version: 14 })
+    expect(snapshot(failed)).toEqual(before)
+  }
+  const backups = (await readdir(folder)).filter(file => file.endsWith('.backup'))
+  expect(backups).toHaveLength(1)
+  const restored = join(folder, 'restored.sqlite')
+  await copyFile(join(folder, backups[0]), restored)
+  {
+    using previous = new DatabaseSync(restored)
+    expect(previous.prepare('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' })
+    expect(snapshot(previous)).toEqual(before)
+    previous.exec('DROP VIEW yandex_settings')
+  }
+  new LibraryStore(restored).close()
+  using current = new DatabaseSync(restored, { readOnly: true })
+  expect(current.prepare('PRAGMA user_version').get()).toEqual({ user_version: 16 })
+  expect(snapshot(current)).toMatchObject(before)
 })

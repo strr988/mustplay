@@ -1,7 +1,7 @@
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { chmod, mkdir, mkdtemp, open, readdir, rename, rm } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import type { PipelineTools } from '../shared/pipeline'
 import { runProcess } from '../audio/process'
 
@@ -24,27 +24,47 @@ const toolHints: Record<PipelineToolName, string> = {
   fpcalc: 'fpcalc (Chromaprint) не найден. Нажмите «Установить инструменты».',
 }
 
-const ytDlpDownloadUrl = isWindows
-  ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+const ytDlpVersion = '2026.10.26'
+const fpcalcVersion = '1.6.0'
+const version: Record<PipelineToolName, string> = { ytDlp: ytDlpVersion, fpcalc: fpcalcVersion }
+
+const ytDlp = isWindows
+  ? ['yt-dlp.exe', 'f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d']
   : process.platform === 'darwin'
-    ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
-    : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp'
+    ? ['yt-dlp_macos', '0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa']
+    : ['yt-dlp', 'e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05afbf3']
+const fpcalc = isWindows
+  ? ['windows-x86_64.zip', '30179d3d0dc4cc92f1a0995c1a2e523fb4867724c2ee6a6ceae474f8e4d6937a']
+  : process.platform === 'darwin'
+    ? ['macos-universal.tar.gz', '31f654cce8308fcb22869d043770eb66afffed95e8a548fd877f0e670c16d7ec']
+    : process.arch === 'arm64'
+      ? ['linux-arm64.tar.gz', 'c8667f556f77d8ebbe08b75a968c0592bd2a67aaa696eff91715feb5083b1cd4']
+      : ['linux-x86_64.tar.gz', '946dc3eade645eb835c8d163c6bb354e092239988bff190b9c42589e8d5cf00a']
 
-function fpcalcAssetPattern(): RegExp {
-  if (isWindows) return /windows-x86_64\.zip$/i
-  if (process.platform === 'darwin') return /macos-universal\.tar\.gz$/i
-  return process.arch === 'arm64' ? /linux-arm64\.tar\.gz$/i : /linux-x86_64\.tar\.gz$/i
-}
-
-interface GithubAsset {
-  name?: unknown
-  browser_download_url?: unknown
-}
-
-async function download(url: string, destination: string): Promise<void> {
-  const response = await fetch(url, { redirect: 'follow' })
-  if (!response.ok) throw new Error(`Не удалось скачать ${basename(destination)} (${response.status})`)
-  await writeFile(destination, Buffer.from(await response.arrayBuffer()))
+async function download(url: string, destination: string, sha256: string, maxBytes: number): Promise<void> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+  if (!response.ok || !response.body) throw new Error('Не удалось скачать ' + basename(destination))
+  const reader = response.body.getReader()
+  const digest = createHash('sha256')
+  let bytes = 0
+  try {
+    const file = await open(destination, 'wx')
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > maxBytes) throw new Error('Размер инструмента превышает допустимый')
+        digest.update(value)
+        await file.writeFile(value)
+      }
+    } finally {
+      await file.close()
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  if (digest.digest('hex') !== sha256) throw new Error('Контрольная сумма инструмента не совпадает')
 }
 
 async function findFile(root: string, fileName: string): Promise<string | null> {
@@ -61,36 +81,6 @@ async function findFile(root: string, fileName: string): Promise<string | null> 
   return null
 }
 
-async function extractArchive(archive: string, toolsDir: string, fileName: string): Promise<void> {
-  const work = await mkdtemp(join(tmpdir(), 'mustplay-tools-'))
-  try {
-    await runProcess('tar', ['-xf', archive, '-C', work], { timeoutMs: 120_000 })
-    const found = await findFile(work, fileName)
-    if (!found) throw new Error(`В архиве не найден ${fileName}`)
-    const destination = join(toolsDir, fileName)
-    await copyFile(found, destination)
-    if (!isWindows) await chmod(destination, 0o755)
-  } finally {
-    await rm(work, { recursive: true, force: true })
-  }
-}
-
-async function fpcalcDownloadUrl(): Promise<string> {
-  const response = await fetch('https://api.github.com/repos/acoustid/chromaprint/releases/latest', {
-    headers: { Accept: 'application/vnd.github+json' },
-  })
-  if (!response.ok) throw new Error(`GitHub ответил ${response.status} при поиске Chromaprint`)
-  const release = await response.json() as { assets?: GithubAsset[] }
-  const pattern = fpcalcAssetPattern()
-  const asset = (release.assets ?? []).find(item =>
-    typeof item.name === 'string' && pattern.test(item.name) &&
-    typeof item.browser_download_url === 'string')
-  if (!asset || typeof asset.browser_download_url !== 'string') {
-    throw new Error('Не найден архив Chromaprint для этой платформы')
-  }
-  return asset.browser_download_url
-}
-
 /**
  * Locates and installs the two external binaries the import pipeline needs.
  * Everything is downloaded from the official GitHub releases into the user's
@@ -104,7 +94,11 @@ export class ToolManager {
   constructor(private readonly toolsDir: string) {}
 
   private candidates(name: PipelineToolName): string[] {
-    return [join(this.toolsDir, binaryName[name])]
+    return [this.managedBinary(name)]
+  }
+
+  private managedBinary(name: PipelineToolName): string {
+    return join(this.toolsDir, name + '-' + version[name], binaryName[name])
   }
 
   private async probe(name: PipelineToolName): Promise<string | null> {
@@ -166,24 +160,43 @@ export class ToolManager {
   }
 
   private async installYtDlp(): Promise<void> {
-    try {
-      await download(ytDlpDownloadUrl, join(this.toolsDir, binaryName.ytDlp))
-      if (!isWindows) await chmod(join(this.toolsDir, binaryName.ytDlp), 0o755)
-    } catch (error) {
-      this.lastErrors.set('ytDlp', error instanceof Error ? error.message : 'неизвестная ошибка')
-    }
+    await this.installVerified('ytDlp', async work => {
+      const [asset, sha256] = ytDlp
+      const binary = join(work, binaryName.ytDlp)
+      await download('https://github.com/yt-dlp/yt-dlp/releases/download/' + ytDlpVersion + '/' + asset,
+        binary, sha256, 64 * 1024 * 1024)
+      return binary
+    })
   }
 
   private async installFpcalc(): Promise<void> {
-    const archive = join(this.toolsDir, 'chromaprint.zip')
+    await this.installVerified('fpcalc', async work => {
+      const [suffix, sha256] = fpcalc
+      const asset = 'chromaprint-fpcalc-' + fpcalcVersion + '-' + suffix
+      const archive = join(work, asset)
+      await download('https://github.com/acoustid/chromaprint/releases/download/v' + fpcalcVersion + '/' + asset,
+        archive, sha256, 8 * 1024 * 1024)
+      await runProcess('tar', ['-xf', archive, '-C', work], { timeoutMs: 120_000 })
+      const binary = await findFile(work, binaryName.fpcalc)
+      if (!binary) throw new Error('В архиве не найден fpcalc')
+      return binary
+    })
+  }
+
+  private async installVerified(name: PipelineToolName, prepare: (work: string) => Promise<string>): Promise<void> {
     try {
-      const url = await fpcalcDownloadUrl()
-      await download(url, archive)
-      await extractArchive(archive, this.toolsDir, binaryName.fpcalc)
+      const work = await mkdtemp(join(this.toolsDir, '.install-'))
+      try {
+        const binary = await prepare(work)
+        if (!isWindows) await chmod(binary, 0o755)
+        const destination = this.managedBinary(name)
+        await mkdir(dirname(destination), { recursive: true })
+        await rename(binary, destination)
+      } finally {
+        await rm(work, { recursive: true, force: true })
+      }
     } catch (error) {
-      this.lastErrors.set('fpcalc', error instanceof Error ? error.message : 'неизвестная ошибка')
-    } finally {
-      await rm(archive, { force: true })
+      this.lastErrors.set(name, error instanceof Error ? error.message : 'неизвестная ошибка')
     }
   }
 }

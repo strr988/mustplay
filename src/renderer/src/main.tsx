@@ -16,7 +16,13 @@ function applyTheme() {
   document.documentElement.dataset.theme = colorScheme.matches ? 'light' : 'dark'
 }
 applyTheme()
-colorScheme.addEventListener('change', applyTheme)
+colorScheme.addEventListener('change', () => {
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    applyTheme()
+    return
+  }
+  document.startViewTransition(applyTheme)
+})
 createRoot(document.getElementById('root')!).render(
   window.miniPlayer ? <MiniPlayer api={window.miniPlayer} /> : <App />,
 )

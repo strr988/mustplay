@@ -10,6 +10,7 @@ export const channels = {
   startPipelineImport: 'pipeline:start',
   getPipelineJob: 'pipeline:job',
   cancelPipelineImport: 'pipeline:cancel',
+  clearPipelineHistory: 'pipeline:clear-history',
   listPipelineJobs: 'pipeline:jobs',
   retryPipelineItem: 'pipeline:retry-item',
   skipPipelineItem: 'pipeline:skip-item',
@@ -83,10 +84,10 @@ export const channels = {
   setYandexEmbedCover: 'yandex:set-embed-cover',
   chooseYandexFolder: 'yandex:choose-folder',
   resetYandexFolder: 'yandex:reset-folder',
-  openYandexTokenPage: 'yandex:open-token-page',
   yandexSearch: 'yandex:search',
   yandexDownload: 'yandex:download',
   yandexCancelDownload: 'yandex:cancel-download',
+  clearYandexHistory: 'yandex:clear-history',
   getYandexDownloads: 'yandex:get-downloads',
   yandexDownloads: 'yandex:downloads',
 } as const
@@ -375,6 +376,7 @@ export interface MustplayApi {
   startPipelineImport(url: string): Promise<PipelineJobView>
   getPipelineJob(id: string): Promise<PipelineJobView | null>
   cancelPipelineImport(): Promise<void>
+  clearPipelineHistory(): Promise<void>
   listPipelineJobs(): Promise<PipelineJobSummary[]>
   retryPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
   skipPipelineItem(jobId: string, itemId: string): Promise<PipelineJobView>
@@ -441,10 +443,10 @@ export interface MustplayApi {
   setYandexEmbedCover(enabled: boolean): Promise<void>
   chooseYandexFolder(): Promise<YandexSettings>
   resetYandexFolder(): Promise<YandexSettings>
-  openYandexTokenPage(): Promise<void>
   yandexSearch(text: string, page: number): Promise<YandexSearchResult>
   yandexDownload(trackId: string): Promise<YandexDownload>
   yandexCancelDownload(id: string): Promise<void>
+  clearYandexHistory(): Promise<void>
   getYandexDownloads(): Promise<YandexDownload[]>
   onYandexDownloads(callback: (downloads: YandexDownload[]) => void): () => void
 }

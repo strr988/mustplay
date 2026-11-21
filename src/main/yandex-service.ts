@@ -1,4 +1,4 @@
-import { dialog, ipcMain, shell } from 'electron'
+import { dialog, ipcMain } from 'electron'
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import { channels, playerOrigin, yandexLyricsFormats, yandexQualities } from '../shared/contracts'
 import type { YandexLyricsFormat, YandexQuality, YandexSearchResult, YandexSettings, YandexTrack } from '../shared/contracts'
@@ -6,7 +6,7 @@ import { fullTitle, YandexApi, YandexError } from './yandex-api'
 import { YandexCoverProxy } from './yandex-cover'
 import { YandexDownloads } from './yandex-downloads'
 import { defaultDownloadFolder, downloadFolderStatus, requireDownloadFolder } from './download-folder'
-import { readYandexToken, writeYandexToken, yandexTokenPage } from './yandex-token'
+import { readYandexToken, writeYandexToken } from './yandex-token'
 import type { Library } from './library'
 
 const trackIdPattern = /^\d{1,20}$/
@@ -125,11 +125,6 @@ export function registerYandex(
     library.setYandexFolder(null)
     return getSettings()
   })
-  ipcMain.handle(channels.openYandexTokenPage, async (event, ...args: unknown[]) => {
-    mainSender(event)
-    if (args.length) throw new Error('Unexpected Yandex token page arguments')
-    await shell.openExternal(yandexTokenPage)
-  })
   ipcMain.handle(channels.yandexSearch, async (event, ...args: unknown[]) => {
     mainSender(event)
     if (args.length !== 2) throw new Error('Invalid Yandex search arguments')
@@ -172,6 +167,12 @@ export function registerYandex(
     if (args.length !== 1 || typeof id !== 'string' || !jobIdPattern.test(id)) throw new Error('Invalid Yandex download ID')
     downloads.cancel(id)
   })
+  ipcMain.handle(channels.clearYandexHistory, (event, ...args: unknown[]) => {
+    mainSender(event)
+    if (args.length !== 0) throw new Error('Некорректный запрос')
+    downloads.clearHistory()
+  })
+
   ipcMain.handle(channels.getYandexDownloads, (event, ...args: unknown[]) => {
     mainSender(event)
     if (args.length) throw new Error('Unexpected Yandex downloads arguments')

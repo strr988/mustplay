@@ -138,9 +138,10 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
           'openPipelineFolder', 'openWebSource', 'getWebSourceState', 'setWebSourceBounds',
           'closeWebSource', 'importWebSourcePlaylist', 'clearWebSourceData',
           'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
-          'chooseYandexFolder', 'openYandexTokenPage', 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'chooseYandexFolder', ...(app.isPackaged && Number(app.getVersion().split('.')[1]) < 12 ? ['openYandexTokenPage'] : []), 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
           'getYandexDownloads', 'onYandexDownloads'] : [],
-        ux ? ['getThemePreference', 'resetPipelineFolder', 'resetYandexFolder'] : []).sort()
+        ux ? ['getThemePreference', 'resetPipelineFolder', 'resetYandexFolder'] : [],
+        !app.isPackaged || Number(app.getVersion().split('.')[1]) >= 12 ? ['clearPipelineHistory', 'clearYandexHistory'] : []).sort()
   assert.deepEqual(await run(`({
     process: typeof window.process,
     require: typeof window.require,
@@ -1008,7 +1009,7 @@ export async function verify(folder, profile, phase, preload = fileURLToPath(new
           'exitMiniFullscreen', 'getLyricsMode', 'setLyricsMode', 'getThemePreference',
           'resetPipelineFolder', 'resetYandexFolder',
           'getYandexSettings', 'setYandexToken', 'setYandexQuality', 'setYandexLyrics', 'setYandexEmbedCover',
-          'chooseYandexFolder', 'openYandexTokenPage', 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
+          'chooseYandexFolder', ...(app.isPackaged && Number(app.getVersion().split('.')[1]) < 12 ? ['openYandexTokenPage'] : []), 'yandexSearch', 'yandexDownload', 'yandexCancelDownload',
           'getYandexDownloads'].filter(key => key in window.mustplay).map(key => window.mustplay[key]()))]
         .map(result => result.then(() => 'unexpectedly accepted', error => error.message))
     )`)

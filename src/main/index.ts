@@ -353,9 +353,14 @@ async function start(): Promise<void> {
   // A pre-merge build kept the Yandex token in this JSON file in plain text.
   // Move it into the encrypted profile store once, then clear it from disk.
   if (pipelineSettings.yandexToken.trim()) {
-    if (!hasYandexToken(library)) writeYandexToken(library, pipelineSettings.yandexToken)
-    pipelineSettings.yandexToken = ''
-    await savePipelineSettingsToDisk()
+    try {
+      if (!hasYandexToken(library)) writeYandexToken(library, pipelineSettings.yandexToken)
+      pipelineSettings.yandexToken = ''
+      await savePipelineSettingsToDisk()
+    } catch {
+      // Leave the legacy value on disk for a later startup with OS encryption.
+      pipelineSettings.yandexToken = ''
+    }
   }
   // Allow fresh Windows profiles where the known folder has yet to be created.
   if (!pipelineSettings.downloadDir || !library.getYandexFolder()) {
@@ -640,6 +645,12 @@ function registerPipelineIpc(library: Library): void {
   ipcMain.handle(channels.cancelPipelineImport, async (event) => {
     senderWindow(event)
     await service.cancelPipelineImport()
+  })
+
+  ipcMain.handle(channels.clearPipelineHistory, (event, ...args: unknown[]) => {
+    senderWindow(event)
+    if (args.length !== 0) throw new Error('Некорректный запрос')
+    service.clearHistory()
   })
 
   ipcMain.handle(channels.listPipelineJobs, async (event) => {

@@ -719,6 +719,13 @@ export class LibraryStore implements ListeningDataReader {
     })
   }
 
+  deletePipelineJobs(ids: string[]): void {
+    this.transaction(() => {
+      const remove = this.db.prepare('DELETE FROM pipeline_jobs WHERE id = ?')
+      for (const id of ids) remove.run(id)
+    })
+  }
+
   savePipelineJob(job: PipelineJob): void {
     this.db.prepare(`INSERT INTO pipeline_jobs (id, payload, created_at) VALUES (?, ?, ?)
       ON CONFLICT (id) DO UPDATE SET payload = excluded.payload`)

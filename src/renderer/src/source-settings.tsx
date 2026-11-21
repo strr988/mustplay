@@ -103,10 +103,8 @@ export function SourceSettings({ section }: { section: 'sources' | 'files' | 'to
               setYandex(await window.mustplay.setYandexToken(''))
               setToken('')
             }, 'Токен удалён.')}>Забыть токен</button>}
-          <button type="button" className="text-button" disabled={busy} onClick={() =>
-            void run(() => window.mustplay.openYandexTokenPage(), '')}>Получить токен</button>
         </form>
-        <p className="muted">Страница получения токена откроется в браузере на стороннем сайте ym-token.marshal.dev. Загружайте треки для личного использования при активной подписке.</p>
+        <p className="muted">Введите OAuth-токен, полученный через доверенное приложение Яндекса.</p>
       </div>
       <div className="settings-subgroup">
         <h3>AcoustID</h3>

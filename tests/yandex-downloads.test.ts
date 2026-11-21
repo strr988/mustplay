@@ -1,5 +1,5 @@
 import { createCipheriv } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -44,6 +44,7 @@ interface FakeOptions {
   cover?: Buffer
   gate?: Promise<void>
   hang?: boolean
+  onDownload?: (url: string) => void
 }
 
 function fakeApi(options: FakeOptions): YandexApi {
@@ -54,7 +55,8 @@ function fakeApi(options: FakeOptions): YandexApi {
     fileInfo: async (_id: string, _quality: string, _signal?: AbortSignal, transport?: string) => transport === 'raw' ? raw : info,
     lyrics: async () => options.lyrics ?? null,
     cover: async () => options.cover ?? Buffer.alloc(0),
-    openDownload: async (_url: string, signal?: AbortSignal) => {
+    openDownload: async (url: string, signal?: AbortSignal) => {
+      options.onDownload?.(url)
       if (options.hang) {
         const stream = new Readable({ read() {} }) as Readable & { headers: Record<string, string> }
         stream.headers = { 'content-length': '4096' }
@@ -163,6 +165,8 @@ it('cancels a queued download without touching the active one', async () => {
   expect(manager.list().find(entry => entry.id === first.id)?.status).toBe('downloading')
   manager.cancel(second.id)
   expect(manager.list().find(entry => entry.id === second.id)?.status).toBe('cancelled')
+  manager.clearHistory()
+  expect(manager.list().map(entry => entry.id)).toEqual([first.id])
   release()
   expect((await settle(manager, first.id)).status).toBe('complete')
   manager.dispose()
@@ -187,5 +191,61 @@ it('reports an error for an unsupported codec and leaves no file behind', async 
   expect(settled.status).toBe('error')
   expect(settled.error).toContain('кодек')
   expect((await readdir(folder)).filter(name => name.startsWith('.mustplay-'))).toEqual([])
+  manager.dispose()
+})
+it('publishes an M4A and LRC without replacing files at either existing name', async () => {
+  const [audio, cover] = await Promise.all([fixture('formats/tone.m4a'), fixture('cover.jpg')])
+  const lyrics = '[00:00.10] Test'
+  const directory = join(folder, 'Альбомный', 'Альбом')
+  const base = join(directory, '03 - Тест_B_C')
+  await mkdir(directory, { recursive: true })
+  await writeFile(base + '.m4a', 'original')
+  await writeFile(base + ' (123).m4a', 'previous download')
+  await writeFile(base + ' (123-2).lrc', 'existing lyrics')
+  const manager = new YandexDownloads(() => undefined,
+    () => fakeApi({ audio, cover, lyrics, info: { codec: 'aac' } }))
+  const job = manager.enqueue('123', config({ lyrics: 'lrc' }), { title: 'Тест', artist: null })
+  expect((await settle(manager, job.id)).status).toBe('complete')
+  expect(await readFile(base + '.m4a', 'utf8')).toBe('original')
+  expect(await readFile(base + ' (123).m4a', 'utf8')).toBe('previous download')
+  expect(await readFile(base + ' (123-2).lrc', 'utf8')).toBe('existing lyrics')
+  expect(await readFile(base + ' (123-3).lrc', 'utf8')).toBe(lyrics)
+  const metadata = await parseFile(base + ' (123-3).m4a')
+  expect(metadata.common.title).toBe(track.title)
+  expect(metadata.common.picture?.[0].format).toBe('image/jpeg')
+  expect(metadata.format.duration).toBeGreaterThan(0)
+  expect((await readdir(directory)).filter(name => name.startsWith('.mustplay-'))).toEqual([])
+  manager.dispose()
+})
+
+it.each(['ETIMEDOUT', 'ECONNRESET'])('tries the next audio URL after %s', async code => {
+  const audio = await fixture('01-tone.mp3')
+  const urls = ['https://cdn.example/first', 'https://cdn.example/second']
+  const attempts: string[] = []
+  const manager = new YandexDownloads(() => undefined, () => fakeApi({
+    audio, info: { urls }, onDownload(url) {
+      attempts.push(url)
+      if (url === urls[0]) throw Object.assign(new Error('Server did not deliver audio'), { code })
+    },
+  }))
+  const job = manager.enqueue('123', config({ embedCover: false }), { title: 'Test', artist: null })
+  expect((await settle(manager, job.id)).status).toBe('complete')
+  expect(attempts).toEqual(urls)
+  manager.dispose()
+})
+
+it('reports insufficient disk space and does not retry another URL', async () => {
+  const urls = ['https://cdn.example/first', 'https://cdn.example/second']
+  const attempts: string[] = []
+  const manager = new YandexDownloads(() => undefined, () => fakeApi({
+    audio: Buffer.alloc(0), info: { urls }, onDownload(url) {
+      attempts.push(url)
+      throw Object.assign(new Error('Disk is full'), { code: 'ENOSPC' })
+    },
+  }))
+  const job = manager.enqueue('123', config({ embedCover: false }), { title: 'Test', artist: null })
+  expect(await settle(manager, job.id)).toMatchObject({ status: 'error', error: 'На диске недостаточно свободного места.' })
+  expect(attempts).toEqual([urls[0]])
+  expect(await readdir(join(folder, 'Альбомный', 'Альбом'))).toEqual([])
   manager.dispose()
 })

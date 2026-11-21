@@ -395,7 +395,7 @@ export function App() {
                 unavailable={tracks.length > 0 && !anyAvailable} ready={playback.ready && !scan && !libraryLoading && !libraryLoadFailed}
                 active={playback.mode === 'wave'} playing={playback.playing} loading={playback.loading}
                 visible={section === 'wave' && !fullPlayerOpen} audio={playback.audioProps.ref}
-                pulseIntensity={wavePulse ?? defaultWavePulse}
+                effects={playback.audioEffects} pulseIntensity={wavePulse ?? defaultWavePulse}
                 recommendation={playback.recommendation}
                 title={playback.track?.title} notice={playback.waveNotice} start={playback.startWave}
                 openLibrary={() => { openSection('library'); libraryLink.current?.focus() }} />

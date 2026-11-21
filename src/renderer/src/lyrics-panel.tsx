@@ -87,8 +87,7 @@ export function LyricsPanel({ track, result, ...presentation }: {
     </>
   }
   if (mode === 'read') return body
-  return <section id="full-player-lyrics" aria-labelledby="full-lyrics-heading" className="text-music">
-    <h2 id="full-lyrics-heading">Текстомузыка</h2>
+  return <section id="full-player-lyrics" aria-label="Текст песни" className="text-music">
     {body}
   </section>
 }
@@ -104,6 +103,15 @@ function TimedLyrics({ lines, active, audio, canSeek, seek }: {
   const [follow, setFollow] = useState(true)
   const currentLine = useRef<HTMLLIElement>(null)
   const list = useRef<HTMLOListElement>(null)
+  const resumeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => () => clearTimeout(resumeTimer.current), [])
+
+  function pauseFollowing() {
+    clearTimeout(resumeTimer.current)
+    setFollow(false)
+    resumeTimer.current = setTimeout(() => setFollow(true), 5000)
+  }
   useEffect(() => {
     const element = audio.current
     if (!active || !element) return
@@ -126,22 +134,15 @@ function TimedLyrics({ lines, active, audio, canSeek, seek }: {
     })
   }, [current, follow, active])
 
-  return <>
-    <div className="lyrics-toolbar">
-      <button type="button" className="secondary" aria-pressed={follow} onClick={() => setFollow(!follow)}>
-        Следить за текстом
-      </button>
-    </div>
-    <ol ref={list} className="lyrics-lines" aria-label="Строки текста" onWheel={() => setFollow(false)}
-      onTouchMove={() => setFollow(false)} onKeyDown={event => {
-        if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) setFollow(false)
-      }} onPointerDown={event => {
-        if (event.target === event.currentTarget) setFollow(false)
-      }} tabIndex={0}>
+  return (
+    <ol ref={list} className="lyrics-lines" aria-label="Строки текста" onWheel={pauseFollowing}
+      onTouchMove={pauseFollowing} onKeyDown={event => {
+        if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) pauseFollowing()
+      }} onPointerDown={pauseFollowing} tabIndex={0}>
       {lines.map(({ seconds, text }, index) => <li key={index} ref={index === current ? currentLine : undefined}>
         {text && <button type="button" disabled={!canSeek} aria-current={index === current ? 'true' : undefined}
-          data-past={index < current} onClick={() => { seek(seconds); setFollow(true) }}>{text}</button>}
+          data-past={index < current} onClick={() => { seek(seconds); pauseFollowing() }}>{text}</button>}
       </li>)}
     </ol>
-  </>
+  )
 }

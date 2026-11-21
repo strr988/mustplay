@@ -286,30 +286,27 @@ function buildIlst(tags: TrackTags): Atom {
   return { type: 'ilst', data: Buffer.alloc(0), children: entries }
 }
 
-function patchOffsets(atom: Atom, delta: number): void {
+function patchOffsets(atom: Atom, delta: number, boundary: number): void {
   if (atom.type === 'stco' && atom.data.length >= 8) {
     const count = atom.data.readUInt32BE(4)
     for (let index = 0; index < count && 8 + index * 4 + 4 <= atom.data.length; index++) {
       const at = 8 + index * 4
-      atom.data.writeUInt32BE(atom.data.readUInt32BE(at) + delta, at)
+      const original = atom.data.readUInt32BE(at)
+      if (original >= boundary) atom.data.writeUInt32BE(original + delta, at)
     }
   }
   if (atom.type === 'co64' && atom.data.length >= 8) {
     const count = atom.data.readUInt32BE(4)
     for (let index = 0; index < count && 8 + index * 8 + 8 <= atom.data.length; index++) {
       const at = 8 + index * 8
-      atom.data.writeBigUInt64BE(atom.data.readBigUInt64BE(at) + BigInt(delta), at)
+      const original = atom.data.readBigUInt64BE(at)
+      if (original >= BigInt(boundary)) atom.data.writeBigUInt64BE(original + BigInt(delta), at)
     }
   }
-  for (const child of atom.children ?? []) patchOffsets(child, delta)
+  for (const child of atom.children ?? []) patchOffsets(child, delta, boundary)
 }
 
-function writeM4a(audio: Buffer, tags: TrackTags): Buffer {
-  const roots = parseAtoms(audio, 0, audio.length)
-  const moovIndex = roots.findIndex(atom => atom.type === 'moov')
-  if (moovIndex < 0) throw new Error('В контейнере MP4 нет атома moov')
-  const moov = roots[moovIndex]
-  const oldSize = serializeAtom(moov).length
+function updateMovie(moov: Atom, tags: TrackTags): void {
   const udta = ensureChild(moov, 'udta')
   const meta = ensureChild(udta, 'meta', Buffer.alloc(4))
   if (!findChild(meta, 'hdlr')) {
@@ -321,11 +318,25 @@ function writeM4a(audio: Buffer, tags: TrackTags): Buffer {
   }
   meta.children = (meta.children ?? []).filter(child => child.type !== 'ilst')
   meta.children.push(buildIlst(tags))
-  const newSize = serializeAtom(moov).length
-  const delta = newSize - oldSize
-  const mdatIndex = roots.findIndex(atom => atom.type === 'mdat')
-  if (delta !== 0 && mdatIndex > moovIndex) patchOffsets(moov, delta)
-  return Buffer.concat(roots.map(serializeAtom))
+}
+
+export function writeM4aMovie(bytes: Buffer, fileOffset: number, tags: TrackTags): Buffer {
+  const moov = parseAtoms(bytes, 0, bytes.length)[0]
+  if (moov?.type !== 'moov') throw new Error('В контейнере MP4 нет атома moov')
+  updateMovie(moov, tags)
+  const delta = serializeAtom(moov).length - bytes.length
+  if (delta !== 0) patchOffsets(moov, delta, fileOffset + bytes.length)
+  return serializeAtom(moov)
+}
+
+function writeM4a(audio: Buffer, tags: TrackTags): Buffer {
+  const roots = parseAtoms(audio, 0, audio.length)
+  const index = roots.findIndex(atom => atom.type === 'moov')
+  if (index < 0) throw new Error('В контейнере MP4 нет атома moov')
+  const before = roots.slice(0, index).map(serializeAtom)
+  const offset = before.reduce((size, atom) => size + atom.length, 0)
+  const moov = writeM4aMovie(serializeAtom(roots[index]), offset, tags)
+  return Buffer.concat([...before, moov, ...roots.slice(index + 1).map(serializeAtom)])
 }
 
 export function writeTags(container: TagContainer, audio: Buffer, tags: TrackTags): Buffer {

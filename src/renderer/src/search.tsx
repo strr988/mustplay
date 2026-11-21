@@ -163,7 +163,9 @@ export function Search({ active, openSettings }: {
         </tr>)}</tbody>
       </table>
     </div>)}
-    <DownloadsPanel downloads={downloads} onCancel={cancel} />
+    <DownloadsPanel downloads={downloads} onCancel={cancel} onClear={() => {
+      void window.mustplay.clearYandexHistory().catch(() => setActionError('Не удалось очистить историю загрузок.'))
+    }} />
   </section>
 }
 
@@ -192,11 +194,19 @@ function DownloadAction({ track, job, canDownload, onDownload, onCancel }: {
   </div>
 }
 
-function DownloadsPanel({ downloads, onCancel }: { downloads: YandexDownload[]; onCancel: (id: string) => void }) {
+function DownloadsPanel({ downloads, onCancel, onClear }: {
+  downloads: YandexDownload[]
+  onCancel: (id: string) => void
+  onClear: () => void
+}) {
   if (downloads.length === 0) return null
   const ordered = [...downloads].reverse()
   return <section className="settings-card yandex-downloads" aria-label="Загрузки Яндекс Музыки">
-    <h2>Загрузки</h2>
+    <div className="settings-option">
+      <h2>Загрузки</h2>
+      <button type="button" className="secondary" disabled={downloads.every(job => activeStatuses.has(job.status))}
+        onClick={onClear}>Очистить историю загрузок</button>
+    </div>
     <p className="muted">Файлы сохраняются в выбранную папку. Добавьте её в библиотеку, чтобы слушать треки.</p>
     <ul>{ordered.map(job => <li key={job.id}>
       <div className="yandex-download-row">

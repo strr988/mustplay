@@ -1,10 +1,12 @@
-import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createDecipheriv, randomUUID } from 'node:crypto'
+import { constants, createReadStream, createWriteStream } from 'node:fs'
+import { copyFile, link, mkdir, open, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { decryptEncraw, fullTitle, parseEncrawKey, YandexApi, YandexError } from './yandex-api'
+import { pipeline } from 'node:stream/promises'
+import { fullTitle, parseEncrawKey, YandexApi, YandexError } from './yandex-api'
 import type { DownloadInfo, RawTrack } from './yandex-api'
-import { containerForCodec, writeTags } from './yandex-tags'
-import type { CoverImage, TrackTags } from './yandex-tags'
+import { containerForCodec, writeM4aMovie, writeTags } from './yandex-tags'
+import type { CoverImage, TagContainer, TrackTags } from './yandex-tags'
 import { artworkMime } from './artwork'
 import type { YandexDownload, YandexLyricsFormat, YandexQuality } from '../shared/contracts'
 
@@ -35,16 +37,141 @@ function cleanComponent(name: string): string {
   return (cleared || 'track').slice(0, 180)
 }
 
-async function exists(path: string): Promise<boolean> {
+const maxBufferedTagBytes = 64 * 1024 * 1024
+
+function fileError(error: unknown, code: string): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === code
+}
+
+async function copyAudioRange(source: string, target: string, start: number, end: number, signal: AbortSignal) {
+  if (start >= end) return
+  await pipeline(createReadStream(source, { start, end: end - 1 }),
+    createWriteStream(target, { flags: 'a' }), { signal })
+}
+
+async function tagM4a(source: string, target: string, tags: TrackTags, size: number, signal: AbortSignal) {
+  const file = await open(source, 'r')
+  let offset = 0
+  let movie: Buffer | undefined
+  let movieLength = 0
   try {
-    await stat(path)
-    return true
-  } catch {
-    return false
+    const header = Buffer.alloc(16)
+    while (offset < size) {
+      signal.throwIfAborted()
+      const { bytesRead } = await file.read(header, 0, header.length, offset)
+      if (bytesRead < 8) throw new Error('Повреждённый контейнер MP4')
+      const length = header.readUInt32BE(0)
+      const atomLength = length === 1 && bytesRead === 16 ? Number(header.readBigUInt64BE(8))
+        : length === 0 ? size - offset : length
+      if (atomLength < (length === 1 ? 16 : 8) || atomLength > size - offset) {
+        throw new Error('Некорректный размер атома MP4')
+      }
+      if (header.toString('latin1', 4, 8) === 'moov') {
+        if (atomLength > maxBufferedTagBytes) throw new Error('Метаданные MP4 слишком велики')
+        const bytes = Buffer.alloc(atomLength)
+        if ((await file.read(bytes, 0, atomLength, offset)).bytesRead !== atomLength) {
+          throw new Error('Повреждённые метаданные MP4')
+        }
+        movie = writeM4aMovie(bytes, offset, tags)
+        movieLength = atomLength
+        break
+      }
+      offset += atomLength
+    }
+  } finally {
+    await file.close()
+  }
+  if (!movie) throw new Error('В контейнере MP4 нет атома moov')
+  await writeFile(target, '', { signal, flag: 'wx' })
+  await copyAudioRange(source, target, 0, offset, signal)
+  await writeFile(target, movie, { signal, flag: 'a' })
+  await copyAudioRange(source, target, offset + movieLength, size, signal)
+}
+
+async function tagFile(source: string, target: string, container: TagContainer, tags: TrackTags,
+  size: number, signal: AbortSignal): Promise<void> {
+  if (container === 'm4a') {
+    await tagM4a(source, target, tags, size, signal)
+    return
+  }
+
+  let offset = 0
+  let prefix: Buffer = Buffer.alloc(0)
+  const file = await open(source, 'r')
+  try {
+    if (container === 'mp3') {
+      const header = Buffer.alloc(10)
+      const { bytesRead } = await file.read(header, 0, 10, 0)
+      if (bytesRead === 10 && header.toString('ascii', 0, 3) === 'ID3') {
+        const bodySize = header.subarray(6, 10).reduce((total, byte) => total * 128 + byte, 0)
+        const end = 10 + bodySize + (header[3] === 4 && (header[5] & 0x10) ? 10 : 0)
+        if (end <= size) offset = end
+      }
+    } else {
+      offset = 4
+      const header = Buffer.alloc(4)
+      for (;;) {
+        signal.throwIfAborted()
+        const { bytesRead } = await file.read(header, 0, 4, offset)
+        if (bytesRead !== 4) throw new Error('Повреждённые метаданные FLAC')
+        offset += 4 + header.readUIntBE(1, 3)
+        if (offset > size || offset > maxBufferedTagBytes) throw new Error('Некорректный размер метаданных FLAC')
+        if ((header[0] & 0x80) !== 0) break
+      }
+      prefix = Buffer.alloc(offset)
+      if ((await file.read(prefix, 0, offset, 0)).bytesRead !== offset) throw new Error('Повреждённые метаданные FLAC')
+    }
+  } finally {
+    await file.close()
+  }
+
+  await writeFile(target, writeTags(container, prefix, tags), { signal, flag: 'wx' })
+  await copyAudioRange(source, target, offset, size, signal)
+}
+
+async function publishExclusive(source: string, target: string): Promise<void> {
+  try {
+    await link(source, target)
+  } catch (error) {
+    if (!['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EPERM', 'EXDEV'].some(code => fileError(error, code))) throw error
+    // FAT/exFAT and some mounted folders do not support hard links.
+    await copyFile(source, target, constants.COPYFILE_EXCL)
+  }
+}
+
+async function publishAudio(source: string, stem: string, extension: string, trackId: string, lyrics: string | null,
+  signal: AbortSignal): Promise<void> {
+  const lyricsSource = source + '.lrc'
+  if (lyrics) await writeFile(lyricsSource, lyrics, { encoding: 'utf8', signal, flag: 'wx' })
+  try {
+    for (let attempt = 0; attempt < 1_000; attempt++) {
+      signal.throwIfAborted()
+      const suffix = attempt === 0 ? '' : attempt === 1 ? ' (' + trackId + ')' : ' (' + trackId + '-' + attempt + ')'
+      const candidate = stem + suffix
+      const audio = candidate + extension
+      try {
+        await publishExclusive(source, audio)
+      } catch (error) {
+        if (fileError(error, 'EEXIST')) continue
+        throw error
+      }
+      if (!lyrics) return
+      try {
+        await publishExclusive(lyricsSource, candidate + '.lrc')
+        return
+      } catch (error) {
+        await rm(audio)
+        if (!fileError(error, 'EEXIST')) throw error
+      }
+    }
+    throw new Error('Не удалось выбрать свободное имя файла')
+  } finally {
+    if (lyrics) await rm(lyricsSource, { force: true }).catch(() => undefined)
   }
 }
 
 function errorMessage(error: unknown): string {
+  if (fileError(error, 'ENOSPC')) return 'На диске недостаточно свободного места.'
   if (error instanceof YandexError) {
     if (error.kind === 'unauthorized') return 'Яндекс Музыка отклонила запрос: проверьте токен и активную подписку. ' + error.message
     if (error.kind === 'unavailable') {
@@ -87,6 +214,13 @@ export class YandexDownloads {
 
   constructor(private readonly onChange: (downloads: YandexDownload[]) => void,
     private readonly createApi: (token: string) => YandexApi = token => new YandexApi(token)) {}
+
+  clearHistory(): void {
+    for (const [id, job] of this.jobs) {
+      if (job.status === 'complete' || job.status === 'error' || job.status === 'cancelled') this.jobs.delete(id)
+    }
+    this.emit(true)
+  }
 
   list(): YandexDownload[] {
     return [...this.jobs.values()].map(job => ({ ...job }))
@@ -188,30 +322,21 @@ export class YandexDownloads {
       const stream = usable ? info : await api.fileInfo(job.trackId, config.quality, signal, 'raw')
       const container = containerForCodec(stream.codec)
       if (!container) throw new YandexError('unavailable', 'Неподдерживаемый кодек: ' + stream.codec)
-      const target = await this.targetPath(config.folder, track, container.extension)
-      await mkdir(dirname(target), { recursive: true })
-      tempRaw = join(config.folder, `.mustplay-${id}.raw.tmp`)
-      tempFinal = join(config.folder, `.mustplay-${id}.tmp`)
+      const stem = this.targetStem(config.folder, track)
+      await mkdir(dirname(stem), { recursive: true })
+      tempRaw = join(dirname(stem), '.mustplay-' + id + '.raw.tmp')
+      tempFinal = join(dirname(stem), '.mustplay-' + id + '.tmp')
       const received = await this.download(api, stream, tempRaw, signal, (bytes, total) => {
         this.update(id, {
           receivedBytes: bytes, totalBytes: total,
           progress: total > 0 ? Math.min(0.9, (bytes / total) * 0.9) : 0,
         }, false)
       })
-      let audio: Buffer = await readFile(tempRaw)
-      await rm(tempRaw, { force: true })
-      tempRaw = null
-      if (stream.key) audio = decryptEncraw(audio, stream.key)
       this.update(id, { status: 'tagging', progress: 0.92 })
       const lyrics = await this.fetchLyrics(api, track, config.lyrics, signal)
       const cover = config.embedCover ? await this.fetchCover(api, track, signal) : null
-      const tagged = writeTags(container.container, audio, buildTags(track, lyrics.text, cover))
-      await writeFile(tempFinal, tagged)
-      await rename(tempFinal, target)
-      tempFinal = null
-      if (lyrics.lrc) {
-        await writeFile(target.slice(0, target.length - container.extension.length) + '.lrc', lyrics.lrc, 'utf8')
-      }
+      await tagFile(tempRaw, tempFinal, container.container, buildTags(track, lyrics.text, cover), received, signal)
+      await publishAudio(tempFinal, stem, container.extension, cleanComponent(track.id), lyrics.lrc, signal)
       outcome = { status: 'complete', progress: 1, receivedBytes: received, totalBytes: received }
     } catch (error) {
       outcome = signal.aborted || this.disposed
@@ -221,40 +346,44 @@ export class YandexDownloads {
       this.controllers.delete(id)
       this.configs.delete(id)
       if (tempRaw) await rm(tempRaw, { force: true }).catch(() => undefined)
-      if (tempFinal) await rm(tempFinal, { force: true }).catch(() => undefined)
+      if (tempFinal) {
+        await rm(tempFinal, { force: true }).catch(() => undefined)
+        await rm(tempFinal + '.lrc', { force: true }).catch(() => undefined)
+      }
     }
     this.update(id, outcome)
   }
 
-  private async targetPath(folder: string, track: RawTrack, extension: string): Promise<string> {
+  private targetStem(folder: string, track: RawTrack): string {
     const album = track.album
     const albumArtist = album?.artists[0]?.name ?? track.artists[0]?.name ?? 'Unknown Artist'
     const albumTitle = album ? fullTitle(album) : 'Unknown Album'
     const number = album?.position?.index
     const base = number != null ? `${String(number).padStart(2, '0')} - ${fullTitle(track)}` : fullTitle(track)
     const directory = join(folder, cleanComponent(albumArtist), cleanComponent(albumTitle))
-    const target = join(directory, cleanComponent(base) + extension)
-    if (await exists(target)) return join(directory, cleanComponent(`${base} (${track.id})`) + extension)
-    return target
+    return join(directory, cleanComponent(base))
   }
 
   private async download(api: YandexApi, info: DownloadInfo, tempRaw: string, signal: AbortSignal,
     onProgress: (received: number, total: number) => void): Promise<number> {
     let lastError: unknown = null
+    const key = info.key ? parseEncrawKey(info.key) : null
     for (const url of info.urls) {
+      const decipher = key ? createDecipheriv('aes-256-ctr', key, Buffer.alloc(16)) : null
       let file: Awaited<ReturnType<typeof open>> | null = null
       try {
         const response = await api.openDownload(url, signal)
         const total = Number(response.headers['content-length'] ?? 0) || 0
-        file = await open(tempRaw, 'w')
         let received = 0
         try {
+          if (total > maxTrackBytes) throw new YandexError('invalid', 'Файл слишком большой')
+          file = await open(tempRaw, 'wx')
           for await (const chunk of response) {
             if (signal.aborted) throw new YandexError('network', 'Запрос отменён')
             const data = chunk as Buffer<ArrayBuffer>
             received += data.length
             if (received > maxTrackBytes) throw new YandexError('invalid', 'Файл слишком большой')
-            await file.write(data)
+            await file.writeFile(decipher ? decipher.update(data) : data)
             onProgress(received, total)
           }
         } finally {
@@ -263,10 +392,11 @@ export class YandexDownloads {
         await file.close()
         file = null
         if (received === 0) throw new YandexError('network', 'Пустой ответ сервера')
+        if (total > 0 && received !== total) throw new YandexError('network', 'Поток аудио оборвался')
         return received
       } catch (error) {
         if (file) await file.close().catch(() => undefined)
-        if (signal.aborted) throw error
+        if (signal.aborted || fileError(error, 'ENOSPC')) throw error
         lastError = error
         await rm(tempRaw, { force: true }).catch(() => undefined)
       }

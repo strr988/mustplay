@@ -9,15 +9,16 @@ import type { Library } from './library'
  * is available and never leaves Main: the interface only learns whether a
  * token exists.
  */
-// The settings page identifies this as a third-party service.
-export const yandexTokenPage = 'https://ym-token.marshal.dev/'
-
 export function readYandexToken(library: Library): string | null {
   const { token, tokenEncrypted } = library.getYandexTokenBlob()
   if (!token || token.length === 0) return null
   const bytes = Buffer.from(token)
   try {
-    return tokenEncrypted ? safeStorage.decryptString(bytes) : bytes.toString('utf8')
+    if (tokenEncrypted) return safeStorage.decryptString(bytes)
+    if (!encryptionAvailable()) return null
+    const legacyToken = bytes.toString('utf8')
+    writeYandexToken(library, legacyToken)
+    return legacyToken
   } catch {
     // A profile copied from another machine cannot be decrypted here.
     return null
@@ -30,12 +31,13 @@ export function writeYandexToken(library: Library, token: string | null): void {
     library.setYandexTokenBlob(null, false)
     return
   }
-  if (safeStorage.isEncryptionAvailable()) {
-    library.setYandexTokenBlob(new Uint8Array(safeStorage.encryptString(trimmed)), true)
-  } else {
-    // DPAPI/keyring is unavailable on this system; the token stays local to the profile.
-    library.setYandexTokenBlob(new Uint8Array(Buffer.from(trimmed, 'utf8')), false)
-  }
+  if (!encryptionAvailable()) throw new Error('Системное шифрование недоступно. Токен не сохранён.')
+  library.setYandexTokenBlob(new Uint8Array(safeStorage.encryptString(trimmed)), true)
+}
+
+function encryptionAvailable(): boolean {
+  return safeStorage.isEncryptionAvailable() &&
+    (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text')
 }
 
 export function hasYandexToken(library: Library): boolean {

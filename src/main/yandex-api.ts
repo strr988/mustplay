@@ -99,13 +99,13 @@ export function decryptEncraw(data: Buffer, keyHex: string): Buffer {
   return Buffer.concat([decipher.update(data), decipher.final()])
 }
 
-function baseHeaders(token: string | null): Record<string, string> {
+function baseHeaders(token: string | null, url: string): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': USER_AGENT,
     'X-Yandex-Music-Client': CLIENT,
     Accept: 'application/json',
   }
-  if (token) headers.Authorization = `OAuth ${token}`
+  if (token && URL.parse(url)?.origin === API_ORIGIN) headers.Authorization = `OAuth ${token}`
   return headers
 }
 
@@ -150,7 +150,7 @@ export function httpsGet(url: string, options: {
       fail(new YandexError('invalid', 'Разрешены только HTTPS-запросы'))
       return
     }
-    const request = httpsRequest(parsed, { method: 'GET', headers: options.headers }, response => {
+    const request = httpsRequest(parsed, { method: 'GET', headers: options.headers, signal: options.signal }, response => {
       const status = response.statusCode ?? 0
       if (status < 200 || status >= 300) {
         const chunks: Buffer[] = []
@@ -174,15 +174,9 @@ export function httpsGet(url: string, options: {
       request.destroy(new YandexError('network', 'Превышено время ожидания ответа'))
     })
     request.on('error', error => {
-      fail(error instanceof YandexError ? error : new YandexError('network', 'Сетевая ошибка: ' + error.message))
+      const detail = options.signal?.aborted ? 'Запрос отменён' : 'Сетевая ошибка'
+      fail(error instanceof YandexError ? error : new YandexError('network', detail))
     })
-    if (options.signal) {
-      if (options.signal.aborted) {
-        request.destroy(new YandexError('network', 'Запрос отменён'))
-        return
-      }
-      options.signal.addEventListener('abort', () => request.destroy(new YandexError('network', 'Запрос отменён')), { once: true })
-    }
     request.end()
   })
 }
@@ -204,7 +198,7 @@ async function collect(response: IncomingMessage, maxBytes: number, signal?: Abo
 }
 
 async function getBuffer(url: string, maxBytes: number, token: string | null, signal?: AbortSignal): Promise<Buffer> {
-  const response = await httpsGet(url, { headers: baseHeaders(token), signal })
+  const response = await httpsGet(url, { headers: baseHeaders(token, url), signal })
   return collect(response, maxBytes, signal)
 }
 
@@ -374,14 +368,6 @@ export class YandexApi {
   }
 
   openDownload(url: string, signal?: AbortSignal): Promise<IncomingMessage> {
-    // The upstream downloader retrieves files with the same session headers as API calls.
-    return httpsGet(url, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'X-Yandex-Music-Client': CLIENT,
-        Authorization: `OAuth ${this.token}`,
-      },
-      signal, timeout: 60_000,
-    })
+    return httpsGet(url, { headers: baseHeaders(this.token, url), signal, timeout: 60_000 })
   }
 }

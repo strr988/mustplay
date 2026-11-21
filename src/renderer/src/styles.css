@@ -1,7 +1,9 @@
 @import 'tailwindcss';
 
 :root {
-  font-family: Inter, 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--window);
   color-scheme: dark;
@@ -533,8 +535,6 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
   line-height: 1.8;
 }
 .lyrics-drawer-actions { padding: 12px 15px; border-top: 1px solid var(--border); }
-.lyrics-toolbar { display: flex; justify-content: center; margin-bottom: 4px; }
-.lyrics-toolbar button[aria-pressed='true'] { color: var(--accent); background: var(--selected); }
 .lyrics-track { display: flex; align-items: center; gap: 9px; padding: 9px; border-radius: var(--radius); background: var(--raised); }
 .lyrics-track .artwork { width: 38px; height: 38px; }
 .lyrics-track .muted { margin-top: 2px; }
@@ -712,7 +712,6 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
   border-radius: var(--radius);
   overflow: hidden;
 }
-.full-player .text-music h2 { margin-bottom: 12px; text-align: center; font-size: 16px; }
 .full-player .text-music .empty-state { background: var(--panel); }
 .full-player :is(.lyrics-lines, .lyrics-plain) { scrollbar-width: none; }
 .full-player .lyrics-lines {
@@ -1187,7 +1186,9 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .player-cover-expand, .full-cover-controls, .full-player-stage, .volume-slider, .import-bar-fill { transition: none; }
-  .disco-layer { display: none; }
+  .disco-layer i { animation: none; }
+  .wave-art::before { transform: scale(1.12); }
+  .wave-art::after { transform: scale(1.28); }
 }
 @container (width < 745px) {
   .tracks .format-column, .sort-control > span { display: none; }
@@ -1207,3 +1208,11 @@ section > form.playlist-toolbar { margin-bottom: 14px; }
   .wave-art { position: absolute; right: 14px; top: 18px; width: 60px; z-index: -1; opacity: .55; }
   .wave-mode { padding: 8px; }
 }
+
+.settings-navigation :is(button, .secondary),
+.player-settings :is(button, input, select, label, .muted) {
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.player-settings h3 { font-size: 16px; font-weight: 650; }
