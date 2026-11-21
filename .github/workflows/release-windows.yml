@@ -7,13 +7,18 @@ on:
         description: "Version tag to publish (for example v0.12.1)"
         required: true
         default: "v0.12.1"
+      distribution_rights_confirmed:
+        description: "I verified third-party licenses, codec distribution rights and notices for this ZIP"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.distribution_rights_confirmed == true
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -39,9 +44,6 @@ jobs:
           }
           if (-not (Test-Path "docs/RELEASE_NOTES_$version.md")) {
             throw "Release notes for $version are missing"
-          }
-          if ((gh release view $env:RELEASE_TAG --json tagName 2>$null)) {
-            throw "Release already exists: $env:RELEASE_TAG"
           }
       - name: Install pnpm
         run: npm install --global pnpm@11.25.0
@@ -74,3 +76,4 @@ jobs:
           $expected = ((Get-Content $sum -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
           if ($actual -ne $expected) { throw "Archive SHA-256 mismatch" }
           gh release create $env:RELEASE_TAG $zip $sum --title "mustplay $env:RELEASE_TAG" --notes-file "docs/RELEASE_NOTES_$version.md" --target $env:GITHUB_SHA --latest
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed" }
